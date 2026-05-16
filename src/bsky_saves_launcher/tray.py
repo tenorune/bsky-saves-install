@@ -7,7 +7,8 @@ exposes a callback hook for opening the status window on icon click.
 from __future__ import annotations
 
 import webbrowser
-from typing import Callable, TYPE_CHECKING
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from PIL import Image, ImageDraw
 
@@ -15,7 +16,6 @@ if TYPE_CHECKING:
     import pystray
 
 from bsky_saves_launcher.supervisor import Supervisor
-
 
 LOCAL_GUI_URL = "http://127.0.0.1:47826/"
 

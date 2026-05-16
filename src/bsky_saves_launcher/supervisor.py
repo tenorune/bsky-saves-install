@@ -10,7 +10,7 @@ from __future__ import annotations
 import subprocess
 import threading
 from collections import deque
-from typing import Callable, Sequence
+from collections.abc import Callable, Sequence
 
 
 class Supervisor:

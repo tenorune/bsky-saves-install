@@ -15,7 +15,6 @@ from pathlib import Path
 
 import httpx
 
-
 PYPI_JSON_TEMPLATE = "https://pypi.org/pypi/bsky-saves/{version}/json"
 
 

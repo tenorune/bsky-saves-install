@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import signal
 import time
 from unittest.mock import MagicMock, patch
-
-import pytest
 
 from bsky_saves_launcher.supervisor import Supervisor
 
@@ -100,7 +97,9 @@ def test_recent_logs_returns_ring_buffer_contents() -> None:
 
 
 def test_double_start_is_idempotent() -> None:
-    with patch("bsky_saves_launcher.supervisor.subprocess.Popen", return_value=_make_proc()) as popen:
+    with patch(
+        "bsky_saves_launcher.supervisor.subprocess.Popen", return_value=_make_proc()
+    ) as popen:
         sup = Supervisor(command=["bsky-saves", "serve"])
         sup.start()
         sup.start()  # second call is a no-op
