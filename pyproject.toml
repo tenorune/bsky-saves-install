@@ -1,0 +1,40 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "bsky-saves-launcher"
+version = "0.1.0"
+description = "Menu-bar launcher that supervises bsky-saves serve for the bsky-saves-install macOS app."
+requires-python = ">=3.11"
+authors = [{ name = "tenorune" }]
+license = { text = "MIT" }
+dependencies = [
+    "pystray>=0.19",
+    "Pillow>=10",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+]
+
+[project.scripts]
+bsky-saves-launcher = "bsky_saves_launcher.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/bsky_saves_launcher"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
