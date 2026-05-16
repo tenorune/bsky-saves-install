@@ -20,6 +20,7 @@ dev = [
     "pytest>=8",
     "pytest-asyncio>=0.23",
     "ruff>=0.5",
+    "briefcase>=0.3.20",
 ]
 
 [project.scripts]
@@ -38,3 +39,32 @@ select = ["E", "F", "W", "I", "B", "UP"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
+
+[tool.briefcase]
+project_name = "Bsky Saves"
+bundle = "net.lightseed"
+version = "0.1.0"
+url = "https://github.com/tenorune/bsky-saves-install"
+license = "MIT"
+author = "tenorune"
+author_email = "noreply@lightseed.net"
+
+[tool.briefcase.app.bsky-saves]
+formal_name = "Bsky Saves"
+description = "Local helper for bsky-saves bookmarks."
+long_description = "Menu-bar launcher that supervises bsky-saves serve and exposes a local helper at http://127.0.0.1:47826/."
+sources = ["src/bsky_saves_launcher"]
+test_sources = ["tests"]
+
+# Runtime dependencies bundled into the .app. The bsky-saves wheel is resolved
+# via a local-file URL pointing at the wheelhouse populated by scripts/fetch_wheel.py.
+requires = [
+    "pystray>=0.19",
+    "Pillow>=10",
+    "httpx>=0.27",
+    "bsky-saves @ file://./wheelhouse/bsky_saves-0.7.0-py3-none-any.whl",
+]
+
+[tool.briefcase.app.bsky-saves.macOS]
+universal_build = true
+requires = []
