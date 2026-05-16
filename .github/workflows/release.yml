@@ -1,0 +1,71 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install build deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Fetch + verify bsky-saves wheel
+        run: python scripts/fetch_wheel.py
+
+      - name: Briefcase create
+        run: briefcase create macOS
+
+      - name: Briefcase build
+        run: briefcase build macOS
+
+      - name: Briefcase package (unsigned)
+        run: briefcase package macOS --adhoc-sign
+
+      - name: Smoke test built .app
+        run: |
+          set -e
+          DMG=$(ls dist/*.dmg | head -n1)
+          APP_DIR=$(mktemp -d)
+          hdiutil attach "$DMG" -mountpoint "$APP_DIR" -nobrowse -quiet
+          APP=$(ls -d "$APP_DIR"/*.app | head -n1)
+          "$APP/Contents/MacOS/Bsky Saves" &
+          APP_PID=$!
+          for i in {1..60}; do
+            if curl -sf http://127.0.0.1:47826/ping > /tmp/ping.json; then
+              break
+            fi
+            sleep 1
+          done
+          cat /tmp/ping.json
+          python -c "import json,sys; d=json.load(open('/tmp/ping.json')); assert d.get('gui_bundled') is True, d; print('smoke OK:', d.get('version'))"
+          kill $APP_PID || true
+          hdiutil detach "$APP_DIR" -quiet || true
+
+      - name: Compute SHA256SUMS
+        run: |
+          cd dist
+          shasum -a 256 *.dmg > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attach artifacts to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.dmg
+            dist/SHA256SUMS
+          fail_on_unmatched_files: true
