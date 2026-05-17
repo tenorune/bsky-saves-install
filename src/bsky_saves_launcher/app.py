@@ -128,6 +128,29 @@ def _run_probe() -> None:
     except Exception as exc:
         info["ja3_error"] = repr(exc)
 
+    # Compare against bsky-saves' own SSLContext, if v0.6.5+ bundles it. This
+    # tells us whether the helper-side TLS workaround produces a different JA3
+    # at all — and if so, whether it matches the JA3 the installer-side
+    # workaround uses. Diagnostic for tenorune/bsky-saves#19.
+    try:
+        import httpx
+        from bsky_saves._net import bsky_ssl_context  # type: ignore[import-not-found]
+
+        ctx = bsky_ssl_context()
+        info["bsky_ctx_ciphers"] = [c["name"] for c in ctx.get_ciphers()][:10]
+        resp = httpx.get(
+            "https://tls.peet.ws/api/all",
+            verify=ctx,
+            timeout=10.0,
+        )
+        tls = resp.json().get("tls", {})
+        info["bsky_ctx_ja3_hash"] = tls.get("ja3_hash")
+        info["bsky_ctx_ja4"] = tls.get("ja4")
+    except ImportError as exc:
+        info["bsky_ctx_unavailable"] = repr(exc)
+    except Exception as exc:
+        info["bsky_ctx_error"] = repr(exc)
+
     info["env_http_proxy"] = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     info["env_https_proxy"] = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     info["env_no_proxy"] = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
@@ -163,6 +186,30 @@ def _run_probe() -> None:
             }
         except Exception as exc:
             info["bookmark_error"] = repr(exc)
+
+        # Same bookmark fetch, but through bsky-saves' own SSLContext if it
+        # exists. Tells us whether the helper-side cipher fix actually
+        # produces a WAF-accepted JA3 when applied directly to a bookmark
+        # call. For tenorune/bsky-saves#19.
+        try:
+            import httpx
+            from bsky_saves._net import bsky_ssl_context  # type: ignore[import-not-found]
+
+            ctx = bsky_ssl_context()
+            r = httpx.get(
+                "https://bsky.social/xrpc/app.bsky.bookmark.getBookmarks",
+                params={"limit": 1},
+                headers={"Authorization": f"Bearer {jwt}"},
+                verify=ctx,
+                timeout=30.0,
+            )
+            info["bookmark_with_bsky_ctx_status"] = r.status_code
+            info["bookmark_with_bsky_ctx_headers"] = dict(r.headers)
+            info["bookmark_with_bsky_ctx_body"] = r.text[:600]
+        except ImportError:
+            pass
+        except Exception as exc:
+            info["bookmark_with_bsky_ctx_error"] = repr(exc)
     else:
         info["bookmark_probe"] = (
             "skipped — set BSKY_SAVES_PROBE_JWT to a fresh accessJwt to exercise"
