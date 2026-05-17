@@ -23,7 +23,7 @@ Subsequent launches do not prompt.
 
 ## Development
 
-Requires Python 3.11+ and **pip ≥ 23** (hatchling editable installs use
+Requires Python 3.13+ and **pip ≥ 23** (hatchling editable installs use
 PEP 660, which older pip versions don't support). Upgrade pip first if
 your venv ships an older one — the macOS python.org installer is a
 common offender.
