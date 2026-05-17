@@ -28,6 +28,8 @@ jobs:
         run: python scripts/fetch_wheel.py
 
       - name: Briefcase create
+        env:
+          PIP_FIND_LINKS: ${{ github.workspace }}/wheelhouse
         run: briefcase create macOS
 
       - name: Briefcase build

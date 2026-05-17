@@ -44,8 +44,8 @@ jobs:
           p = Path("pyproject.toml")
           text = p.read_text()
           new = re.sub(
-              r'"bsky-saves @ file://./wheelhouse/bsky_saves-[^"]+\.whl"',
-              f'"bsky-saves @ file://./wheelhouse/bsky_saves-{version}-py3-none-any.whl"',
+              r'"bsky-saves==[^"]+"',
+              f'"bsky-saves=={version}"',
               text,
           )
           p.write_text(new)
