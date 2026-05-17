@@ -6,6 +6,7 @@ exposes a callback hook for opening the status window on icon click.
 
 from __future__ import annotations
 
+import os
 import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -46,8 +47,11 @@ class TrayApp:
         webbrowser.open(LOCAL_GUI_URL)
 
     def _on_quit(self, icon, item) -> None:  # noqa: F821
-        self._supervisor.stop()
+        # The helper runs in a daemon thread inside this process and can't be
+        # stopped cleanly (Python threads aren't killable). Terminate the
+        # whole process to take it down.
         icon.stop()
+        os._exit(0)
 
     def _on_default(self, icon, item) -> None:  # noqa: F821
         # Triggered by left-click on the icon (pystray default action).
