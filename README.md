@@ -1,7 +1,6 @@
 # bsky-saves-install
 
-Native installers for the `bsky-saves` local helper. The third leg of
-the `bsky-saves` / `bsky-saves-gui` / `bsky-saves-install` trio.
+Native installers for the `bsky-saves` local helper.
 
 ## Status
 
