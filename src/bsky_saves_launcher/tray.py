@@ -7,6 +7,8 @@ exposes a callback hook for opening the status window on icon click.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -19,6 +21,74 @@ if TYPE_CHECKING:
 from bsky_saves_launcher.supervisor import Supervisor
 
 LOCAL_GUI_URL = "http://127.0.0.1:47826/"
+
+# AppleScript: focus an existing Safari/Chrome tab whose URL starts with
+# LOCAL_GUI_URL; otherwise open a new one in the default browser. Without this,
+# every "Open GUI" click opens a new tab (the macOS `open location` default).
+_FOCUS_OR_OPEN_APPLESCRIPT = r"""
+on run argv
+    set targetURL to item 1 of argv
+
+    tell application "System Events"
+        set runningApps to name of processes
+    end tell
+
+    if runningApps contains "Safari" then
+        try
+            tell application "Safari"
+                repeat with w in windows
+                    repeat with t in tabs of w
+                        if URL of t starts with targetURL then
+                            set current tab of w to t
+                            set index of w to 1
+                            activate
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end tell
+        end try
+    end if
+
+    if runningApps contains "Google Chrome" then
+        try
+            tell application "Google Chrome"
+                repeat with w in windows
+                    set tIndex to 0
+                    repeat with t in tabs of w
+                        set tIndex to tIndex + 1
+                        if URL of t starts with targetURL then
+                            set active tab index of w to tIndex
+                            set index of w to 1
+                            activate
+                            return
+                        end if
+                    end repeat
+                end repeat
+            end tell
+        end try
+    end if
+
+    open location targetURL
+end run
+"""
+
+
+def _open_or_focus_gui() -> None:
+    """Focus an existing tab on LOCAL_GUI_URL if one exists; else open new."""
+    if sys.platform == "darwin":
+        try:
+            subprocess.run(
+                ["osascript", "-", LOCAL_GUI_URL],
+                input=_FOCUS_OR_OPEN_APPLESCRIPT,
+                text=True,
+                check=True,
+                timeout=5.0,
+            )
+            return
+        except (subprocess.SubprocessError, OSError):
+            pass  # Fall through to webbrowser fallback.
+    webbrowser.open(LOCAL_GUI_URL)
 
 
 def _make_icon_image(*, running: bool) -> Image.Image:
@@ -44,7 +114,7 @@ class TrayApp:
         self._icon: pystray.Icon | None = None
 
     def _on_open_gui(self, icon, item) -> None:  # noqa: F821
-        webbrowser.open(LOCAL_GUI_URL)
+        _open_or_focus_gui()
 
     def _on_quit(self, icon, item) -> None:  # noqa: F821
         # The helper runs in a daemon thread inside this process and can't be
