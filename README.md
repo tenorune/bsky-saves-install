@@ -23,9 +23,15 @@ Subsequent launches do not prompt.
 
 ## Development
 
+Requires Python 3.11+ and **pip ≥ 23** (hatchling editable installs use
+PEP 660, which older pip versions don't support). Upgrade pip first if
+your venv ships an older one — the macOS python.org installer is a
+common offender.
+
 ```sh
 python -m venv .venv
 source .venv/bin/activate
+python -m pip install --upgrade pip
 pip install -e ".[dev]"
 pytest
 ruff check
