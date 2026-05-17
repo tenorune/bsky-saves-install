@@ -117,12 +117,7 @@ class TrayApp:
         import pystray
 
         menu = pystray.Menu(
-            pystray.MenuItem(
-                "Show status...",
-                self._on_default,
-                default=True,
-                visible=False,  # invoked by icon click, not shown in menu
-            ),
+            pystray.MenuItem("Show status...", self._on_default),
             pystray.MenuItem("Open GUI", self._on_open_gui),
             pystray.MenuItem("Quit", self._on_quit),
         )
