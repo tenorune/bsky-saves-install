@@ -70,4 +70,10 @@ requires = [
 
 [tool.briefcase.app.bsky-saves-launcher.macOS]
 universal_build = true
-requires = []
+# std-nslog routes Python stdout/stderr to macOS unified logging so they're
+# visible via `log show --predicate 'process == "Bsky Saves"'` — without it,
+# Briefcase warns at every launch and helper-side prints are lost. Required
+# for diagnosing helper-side issues (e.g. the 403-body output in fetch.py).
+requires = [
+    "std-nslog~=1.0",
+]
