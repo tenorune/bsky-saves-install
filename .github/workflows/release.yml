@@ -54,7 +54,7 @@ jobs:
             sleep 1
           done
           cat /tmp/ping.json
-          python -c "import json,sys; d=json.load(open('/tmp/ping.json')); assert d.get('gui_bundled') is True, d; print('smoke OK:', d.get('version'))"
+          python -c "import json,sys; d=json.load(open('/tmp/ping.json')); assert d.get('name')=='bsky-saves' and d.get('gui_bundled'), d; print('smoke OK: version', d.get('version'), 'gui_bundled', d.get('gui_bundled'))"
           kill $APP_PID || true
           hdiutil detach "$APP_DIR" -quiet || true
 
