@@ -61,6 +61,17 @@ jobs:
       - name: Compute SHA256SUMS
         run: |
           cd dist
+          # Rename .dmg files to remove spaces so the asset's display name
+          # matches its download URL. GitHub replaces spaces with dots in
+          # asset URLs; without this rename, `shasum -c SHA256SUMS` after
+          # `curl -O <url>` fails because the local file has dots but the
+          # SHA file lists spaces.
+          for f in *.dmg; do
+            new="${f// /.}"
+            if [ "$f" != "$new" ]; then
+              mv -- "$f" "$new"
+            fi
+          done
           shasum -a 256 *.dmg > SHA256SUMS
           cat SHA256SUMS
 
