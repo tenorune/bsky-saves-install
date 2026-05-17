@@ -1,109 +1,89 @@
-"""Unit tests for the subprocess supervisor."""
+"""Unit tests for the thread-based supervisor."""
 
 from __future__ import annotations
 
+import threading
 import time
-from unittest.mock import MagicMock, patch
 
 from bsky_saves_launcher.supervisor import Supervisor
 
 
-def _make_proc(*, alive_for: float = 10.0, returncode: int | None = None) -> MagicMock:
-    """Build a fake subprocess.Popen-shaped object."""
-    proc = MagicMock()
-    proc._start_time = time.monotonic()
-    proc._alive_for = alive_for
-    proc.returncode = returncode
-    proc.pid = 12345
+def test_supervisor_start_runs_target_in_thread() -> None:
+    started = threading.Event()
+    release = threading.Event()
 
-    def poll() -> int | None:
-        if proc.returncode is not None:
-            return proc.returncode
-        if time.monotonic() - proc._start_time > proc._alive_for:
-            proc.returncode = 0
-            return 0
-        return None
+    def target() -> None:
+        started.set()
+        release.wait(timeout=2.0)
 
-    def wait(timeout: float | None = None) -> int:
-        deadline = time.monotonic() + (timeout or 0.0)
-        while poll() is None:
-            if timeout is not None and time.monotonic() > deadline:
-                raise TimeoutError
-            time.sleep(0.01)
-        return proc.returncode
-
-    proc.poll.side_effect = poll
-    proc.wait.side_effect = wait
-    proc.stdout = MagicMock()
-    proc.stdout.readline.return_value = ""
-    proc.stderr = MagicMock()
-    proc.stderr.readline.return_value = ""
-    return proc
+    sup = Supervisor(target=target)
+    sup.start()
+    assert started.wait(timeout=1.0), "target did not run"
+    assert sup.is_alive()
+    release.set()
+    for _ in range(20):
+        if not sup.is_alive():
+            break
+        time.sleep(0.05)
+    assert not sup.is_alive()
 
 
-def test_supervisor_start_spawns_subprocess() -> None:
-    with patch("bsky_saves_launcher.supervisor.subprocess.Popen") as popen:
-        popen.return_value = _make_proc()
-        sup = Supervisor(command=["bsky-saves", "serve"])
-        sup.start()
-        try:
-            popen.assert_called_once()
-            args, kwargs = popen.call_args
-            assert args[0] == ["bsky-saves", "serve"]
-            assert sup.is_alive()
-        finally:
-            sup.stop(timeout=1.0)
+def test_supervisor_double_start_is_idempotent() -> None:
+    call_count = 0
+    release = threading.Event()
+
+    def target() -> None:
+        nonlocal call_count
+        call_count += 1
+        release.wait(timeout=2.0)
+
+    sup = Supervisor(target=target)
+    sup.start()
+    sup.start()  # second call: no-op while first is still running
+    time.sleep(0.1)
+    assert call_count == 1
+    release.set()
 
 
-def test_supervisor_stop_sends_sigterm() -> None:
-    fake_proc = _make_proc()
-    with patch("bsky_saves_launcher.supervisor.subprocess.Popen", return_value=fake_proc):
-        sup = Supervisor(command=["bsky-saves", "serve"])
-        sup.start()
-        sup.stop(timeout=1.0)
-    fake_proc.terminate.assert_called_once()
+def test_supervisor_target_receives_args() -> None:
+    seen: list[tuple] = []
+
+    def target(argv: list[str]) -> None:
+        seen.append(tuple(argv))
+
+    sup = Supervisor(target=target, args=(["serve", "--port", "47826"],))
+    sup.start()
+    for _ in range(20):
+        if seen:
+            break
+        time.sleep(0.05)
+    assert seen == [("serve", "--port", "47826")]
 
 
-def test_supervisor_stop_falls_back_to_kill_on_timeout() -> None:
-    fake_proc = _make_proc(alive_for=1e6)  # never dies of natural causes
+def test_supervisor_swallows_system_exit_from_target() -> None:
+    def target() -> None:
+        raise SystemExit(2)
 
-    def wait_always_times_out(timeout: float | None = None) -> int:
-        raise TimeoutError
-
-    fake_proc.wait.side_effect = wait_always_times_out
-    with patch("bsky_saves_launcher.supervisor.subprocess.Popen", return_value=fake_proc):
-        sup = Supervisor(command=["bsky-saves", "serve"])
-        sup.start()
-        sup.stop(timeout=0.1)
-    fake_proc.terminate.assert_called_once()
-    fake_proc.kill.assert_called_once()
-
-
-def test_recent_logs_returns_ring_buffer_contents() -> None:
-    fake_proc = _make_proc()
-    lines = [f"line-{i}\n" for i in range(5)]
-    fake_proc.stdout.readline.side_effect = lines + [""]
-    fake_proc.stderr.readline.return_value = ""
-    with patch("bsky_saves_launcher.supervisor.subprocess.Popen", return_value=fake_proc):
-        sup = Supervisor(command=["bsky-saves", "serve"], ring_size=3)
-        sup.start()
-        time.sleep(0.2)  # let reader threads drain
-        logs = sup.recent_logs()
-        sup.stop(timeout=1.0)
-    # Ring is bounded to 3, so we kept the most recent 3.
-    assert len(logs) <= 3
-    if logs:
-        assert all(line.startswith("line-") for line in logs)
+    on_exit_seen: list[int | None] = []
+    sup = Supervisor(target=target, on_exit=lambda rc: on_exit_seen.append(rc))
+    sup.start()
+    for _ in range(20):
+        if on_exit_seen:
+            break
+        time.sleep(0.05)
+    assert on_exit_seen == [0]
 
 
-def test_double_start_is_idempotent() -> None:
-    with patch(
-        "bsky_saves_launcher.supervisor.subprocess.Popen", return_value=_make_proc()
-    ) as popen:
-        sup = Supervisor(command=["bsky-saves", "serve"])
-        sup.start()
-        sup.start()  # second call is a no-op
-        try:
-            popen.assert_called_once()
-        finally:
-            sup.stop(timeout=1.0)
+def test_supervisor_stop_is_safe_to_call() -> None:
+    sup = Supervisor(target=lambda: None)
+    sup.stop()  # no-op even before start
+    sup.start()
+    time.sleep(0.05)
+    sup.stop()  # no-op after thread has finished
+
+
+def test_recent_logs_returns_empty_in_v01() -> None:
+    sup = Supervisor(target=lambda: None)
+    sup.start()
+    time.sleep(0.05)
+    assert sup.recent_logs() == []

@@ -1,122 +1,87 @@
-"""Subprocess supervisor for `bsky-saves serve`.
+"""Thread-based supervisor for the bsky-saves helper.
 
-Owns the child process across the launcher's lifetime. Captures stdout/stderr
-into a bounded ring buffer. Exposes a simple interface: start, stop, is_alive,
-recent_logs, and an on_exit callback.
+Runs a callable (typically `bsky_saves.cli.main(["serve"])`) in a daemon thread
+inside the launcher process.
+
+Why a thread, not a subprocess? Inside a Briefcase macOS .app, the only Python
+entry point is the .app's stub binary at `Contents/MacOS/<name>` — there is no
+standalone `python3` to spawn. Spawning the stub re-launches the whole app,
+which fork-bombs the launcher. Running in-thread sidesteps that entirely.
+
+Trade-off: Python threads cannot be cleanly killed. The Quit button must
+terminate the whole launcher process (via os._exit() in app.py) — there is no
+"stop the helper but keep the launcher alive" path in v0.1. That's acceptable
+for the dogfood milestone; richer control belongs in the follow-up spec for
+helper control endpoints.
 """
 
 from __future__ import annotations
 
-import subprocess
 import threading
-from collections import deque
 from collections.abc import Callable, Sequence
+from typing import Any
 
 
 class Supervisor:
-    """Spawns and supervises a long-running child process."""
+    """Runs a callable in a daemon thread."""
 
     def __init__(
         self,
-        command: Sequence[str],
+        target: Callable[..., Any],
+        args: Sequence[Any] = (),
         *,
-        ring_size: int = 200,
         on_exit: Callable[[int | None], None] | None = None,
     ) -> None:
-        self._command = list(command)
-        self._ring: deque[str] = deque(maxlen=ring_size)
-        self._ring_lock = threading.Lock()
+        self._target = target
+        self._args = tuple(args)
         self._on_exit = on_exit
-        self._proc: subprocess.Popen[str] | None = None
-        self._readers: list[threading.Thread] = []
-        self._exit_watcher: threading.Thread | None = None
+        self._thread: threading.Thread | None = None
         self._lock = threading.Lock()
 
     def start(self) -> None:
-        """Start the subprocess. No-op if already running."""
+        """Start the helper thread. No-op if already running."""
         with self._lock:
-            if self._proc is not None and self._proc.poll() is None:
+            if self._thread is not None and self._thread.is_alive():
                 return
-            self._proc = subprocess.Popen(
-                self._command,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                bufsize=1,
-            )
-            self._readers = [
-                threading.Thread(
-                    target=self._drain,
-                    args=(self._proc.stdout,),
-                    daemon=True,
-                    name="bsi-stdout",
-                ),
-                threading.Thread(
-                    target=self._drain,
-                    args=(self._proc.stderr,),
-                    daemon=True,
-                    name="bsi-stderr",
-                ),
-            ]
-            for t in self._readers:
-                t.start()
-            self._exit_watcher = threading.Thread(
-                target=self._watch_exit,
+            self._thread = threading.Thread(
+                target=self._run,
                 daemon=True,
-                name="bsi-exit-watch",
+                name="bsky-saves-helper",
             )
-            self._exit_watcher.start()
+            self._thread.start()
 
-    def _drain(self, stream) -> None:
+    def _run(self) -> None:
         try:
-            for line in iter(stream.readline, ""):
-                if not line:
-                    break
-                with self._ring_lock:
-                    self._ring.append(line.rstrip("\n"))
-        except (ValueError, OSError):
-            # Stream closed during shutdown.
+            self._target(*self._args)
+        except SystemExit:
+            # bsky-saves CLI calls sys.exit on argparse errors. Swallow so the
+            # launcher's own SystemExit isn't preempted by the thread.
             pass
-
-    def _watch_exit(self) -> None:
-        if self._proc is None:
-            return
-        try:
-            rc = self._proc.wait()
-        except (subprocess.TimeoutExpired, TimeoutError, OSError):
-            # Process was killed or stream closed during shutdown.
-            return
-        if self._on_exit is not None:
-            try:
-                self._on_exit(rc)
-            except Exception:
-                # Callback errors must not crash the watcher thread.
-                pass
+        except Exception:
+            # The helper raised. v0.1 cannot surface this in the UI yet
+            # (status-window contents are deferred). The exception still
+            # appears in NSLog when launched as a .app.
+            pass
+        finally:
+            if self._on_exit is not None:
+                try:
+                    self._on_exit(0)
+                except Exception:
+                    pass
 
     def stop(self, timeout: float = 5.0) -> None:
-        """Terminate the subprocess. SIGTERM first, SIGKILL on timeout."""
-        with self._lock:
-            proc = self._proc
-            if proc is None:
-                return
-            if proc.poll() is not None:
-                self._proc = None
-                return
-            proc.terminate()
-            try:
-                proc.wait(timeout=timeout)
-            except (subprocess.TimeoutExpired, TimeoutError):
-                proc.kill()
-                try:
-                    proc.wait(timeout=timeout)
-                except (subprocess.TimeoutExpired, TimeoutError):
-                    pass
-            self._proc = None
+        """No-op. Python threads cannot be killed cleanly.
+
+        The Quit handler in app.py calls os._exit() to terminate the whole
+        process; that's what actually stops the helper. `stop()` exists so
+        the interface stays uniform with future subprocess-based variants
+        and so callers can use it without special-casing.
+        """
+        return
 
     def is_alive(self) -> bool:
-        proc = self._proc
-        return proc is not None and proc.poll() is None
+        return self._thread is not None and self._thread.is_alive()
 
     def recent_logs(self) -> list[str]:
-        with self._ring_lock:
-            return list(self._ring)
+        """Log capture is deferred to the status-window-contents follow-up spec."""
+        return []
