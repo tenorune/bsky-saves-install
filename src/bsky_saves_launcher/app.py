@@ -21,8 +21,14 @@ def _run_probe() -> None:
     .app's stub binary from a terminal. Output goes to stdout (captured by
     the terminal that launched the stub). Used to gather data for
     cross-environment bug triage (see tenorune/bsky-saves#19).
+
+    If BSKY_SAVES_PROBE_JWT is also set, the probe additionally calls
+    https://bsky.social/xrpc/app.bsky.bookmark.getBookmarks with that JWT
+    and dumps the response. Compare against the pip-Python output from
+    scripts/probe_bookmark.py.
     """
     import json
+    import socket
 
     info: dict[str, object] = {}
     info["python_version"] = sys.version
@@ -53,6 +59,46 @@ def _run_probe() -> None:
         info["ja4"] = tls.get("ja4")
     except Exception as exc:
         info["ja3_error"] = repr(exc)
+
+    info["env_http_proxy"] = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
+    info["env_https_proxy"] = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
+    info["env_no_proxy"] = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
+    info["env_ssl_cert_file"] = os.environ.get("SSL_CERT_FILE")
+    info["env_requests_ca_bundle"] = os.environ.get("REQUESTS_CA_BUNDLE")
+
+    try:
+        info["getaddrinfo_bsky"] = [
+            {"family": str(t[0]), "addr": t[4]}
+            for t in socket.getaddrinfo("bsky.social", 443, type=socket.SOCK_STREAM)
+        ]
+    except Exception as exc:
+        info["getaddrinfo_error"] = repr(exc)
+
+    jwt = os.environ.get("BSKY_SAVES_PROBE_JWT")
+    if jwt:
+        try:
+            import httpx
+
+            url = "https://bsky.social/xrpc/app.bsky.bookmark.getBookmarks"
+            r = httpx.get(
+                url,
+                params={"limit": 1},
+                headers={"Authorization": f"Bearer {jwt}"},
+                timeout=30.0,
+            )
+            info["bookmark_status"] = r.status_code
+            info["bookmark_response_headers"] = dict(r.headers)
+            info["bookmark_response_body"] = r.text[:1500]
+            info["bookmark_request_headers"] = {
+                k: ("<redacted>" if k.lower() == "authorization" else v)
+                for k, v in r.request.headers.items()
+            }
+        except Exception as exc:
+            info["bookmark_error"] = repr(exc)
+    else:
+        info["bookmark_probe"] = (
+            "skipped — set BSKY_SAVES_PROBE_JWT to a fresh accessJwt to exercise"
+        )
 
     print("=== BSKY_SAVES_PROBE ===")
     print(json.dumps(info, indent=2, default=str))
