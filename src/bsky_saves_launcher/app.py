@@ -3,13 +3,81 @@
 from __future__ import annotations
 
 import os
+import ssl
 import sys
 
-from bsky_saves.cli import main as bsky_saves_main
+# TLS workaround for tenorune/bsky-saves#19 — AWS WAF rejects requests from the
+# bundled Python's OpenSSL 3.0.x default TLS handshake (JA3
+# 304734bb1c086c3453b387400cf83f11). Tweaking the SSLContext's cipher list,
+# ALPN, or TLS-version range changes the JA3 and may flip the WAF result.
+#
+# Configurable via env vars so we can iterate without rebuilding:
+#   BSKY_SAVES_TLS_CIPHERS — colon-separated OpenSSL cipher list; if set,
+#       overrides the default cipher list on every SSLContext.
+#   BSKY_SAVES_TLS_NO_HTTP2 — if truthy, only advertise http/1.1 in ALPN.
+#   BSKY_SAVES_TLS_TLS12_ONLY — if truthy, cap maximum_version at TLSv1_2.
+#   BSKY_SAVES_TLS_DEBUG — if truthy, print the configured SSLContext params
+#       once on first use.
+#
+# Default values experimentally chosen to differ from the WAF-blocked JA3.
+# Tweak via env var if the default doesn't flip the result.
+_DEFAULT_CIPHERS = (
+    "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:"
+    "ECDHE-RSA-CHACHA20-POLY1305:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-RSA-AES256-GCM-SHA384:"
+    "ECDHE-ECDSA-CHACHA20-POLY1305:ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384"
+)
 
-from bsky_saves_launcher.status_window import StatusWindow
-from bsky_saves_launcher.supervisor import Supervisor
-from bsky_saves_launcher.tray import TrayApp
+
+def _install_tls_workaround() -> None:
+    """Patch ssl.create_default_context so all SSLContexts get our customization.
+
+    Must run BEFORE httpx/httpcore import or build their default SSLContext.
+    """
+    ciphers = os.environ.get("BSKY_SAVES_TLS_CIPHERS", _DEFAULT_CIPHERS).strip()
+    no_h2 = bool(os.environ.get("BSKY_SAVES_TLS_NO_HTTP2"))
+    tls12_only = bool(os.environ.get("BSKY_SAVES_TLS_TLS12_ONLY"))
+    debug = bool(os.environ.get("BSKY_SAVES_TLS_DEBUG"))
+
+    orig_create = ssl.create_default_context
+
+    def patched(*args, **kwargs):
+        ctx = orig_create(*args, **kwargs)
+        if ciphers:
+            try:
+                ctx.set_ciphers(ciphers)
+            except ssl.SSLError as exc:
+                if debug:
+                    print(f"[TLS workaround] set_ciphers failed: {exc!r}", file=sys.stderr)
+        if no_h2:
+            try:
+                ctx.set_alpn_protocols(["http/1.1"])
+            except Exception as exc:
+                if debug:
+                    print(f"[TLS workaround] set_alpn_protocols failed: {exc!r}", file=sys.stderr)
+        if tls12_only:
+            try:
+                ctx.maximum_version = ssl.TLSVersion.TLSv1_2
+            except Exception as exc:
+                if debug:
+                    print(f"[TLS workaround] tls12 cap failed: {exc!r}", file=sys.stderr)
+        if debug:
+            print(
+                f"[TLS workaround] applied: ciphers={ciphers[:60]}... "
+                f"no_h2={no_h2} tls12_only={tls12_only}",
+                file=sys.stderr,
+            )
+        return ctx
+
+    ssl.create_default_context = patched
+
+
+_install_tls_workaround()
+
+from bsky_saves.cli import main as bsky_saves_main  # noqa: E402
+
+from bsky_saves_launcher.status_window import StatusWindow  # noqa: E402
+from bsky_saves_launcher.supervisor import Supervisor  # noqa: E402
+from bsky_saves_launcher.tray import TrayApp  # noqa: E402
 
 HELPER_ARGV = ["serve", "--gui"]
 
