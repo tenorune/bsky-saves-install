@@ -8,7 +8,11 @@ from bsky_saves_launcher.status_window import StatusWindow
 from bsky_saves_launcher.supervisor import Supervisor
 from bsky_saves_launcher.tray import TrayApp
 
-HELPER_COMMAND = ["bsky-saves", "serve"]
+HELPER_BOOTSTRAP = (
+    "import sys; sys.argv[0] = 'bsky-saves'; "
+    "from bsky_saves.cli import main; main()"
+)
+HELPER_COMMAND = [sys.executable, "-c", HELPER_BOOTSTRAP, "serve"]
 
 
 def main() -> int:
