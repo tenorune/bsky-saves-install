@@ -10,7 +10,7 @@ from bsky_saves_launcher.status_window import StatusWindow
 from bsky_saves_launcher.supervisor import Supervisor
 from bsky_saves_launcher.tray import TrayApp
 
-HELPER_ARGV = ["serve"]
+HELPER_ARGV = ["serve", "--gui"]
 
 
 def main() -> int:
