@@ -56,13 +56,16 @@ long_description = "Menu-bar launcher that supervises bsky-saves serve and expos
 sources = ["src/bsky_saves_launcher"]
 test_sources = ["tests"]
 
-# Runtime dependencies bundled into the .app. The bsky-saves wheel is resolved
-# via a local-file URL pointing at the wheelhouse populated by scripts/fetch_wheel.py.
+# Runtime dependencies bundled into the .app. The bsky-saves wheel is pulled
+# from PyPI by version pin; for reproducible/offline builds, run
+# `python scripts/fetch_wheel.py` first to populate ./wheelhouse/ and set
+# `PIP_FIND_LINKS=./wheelhouse` before `briefcase create`. The fetch script
+# enforces the SHA-256 gate from wheel.sha256.
 requires = [
     "pystray>=0.19",
     "Pillow>=10",
     "httpx>=0.27",
-    "bsky-saves @ file://./wheelhouse/bsky_saves-0.6.4-py3-none-any.whl",
+    "bsky-saves==0.6.4",
 ]
 
 [tool.briefcase.app.bsky-saves-launcher.macOS]
