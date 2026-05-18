@@ -210,7 +210,7 @@ def _build_more_view(
     stack.addArrangedSubview_(start_at_login_switch)
 
     # Quit
-    quit_button = NSButton.buttonWithTitle_target_action_("Quit BSky Saves", None, None)
+    quit_button = NSButton.buttonWithTitle_target_action_("Quit", None, None)
     quit_button.setBezelStyle_(1)
     quit_target = _PyCallbackTarget.alloc().initWithCallable_(on_quit)
     targets_out.append(quit_target)
