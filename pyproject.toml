@@ -45,7 +45,7 @@ addopts = "-q"
 [tool.briefcase]
 project_name = "BSky Saves"
 bundle = "net.lightseed"
-version = "0.2.1"
+version = "0.3.0"
 url = "https://github.com/tenorune/bsky-saves-install"
 license = "MIT"
 author = "tenorune"
