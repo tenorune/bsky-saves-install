@@ -36,14 +36,21 @@ Replace the runtime-drawn circle with a designed glyph loaded from `resources/`.
 
 ### R3. State indicator in the menu-bar icon
 
-Icon variant per supervisor state — "running" (helper /ping succeeds), "starting" (subprocess up, /ping not yet 200), "stopped" (subprocess exited). The plumbing exists in `tray.py::refresh_icon()`; what's missing is (a) the state-change event wired from the supervisor and (b) variant images.
+Icon variant per supervisor state. The plumbing exists in `tray.py::refresh_icon()`; what's missing is (a) the state-change event wired from the supervisor and (b) variant images.
 
-Two visual design directions:
+**Resolved: single template-friendly glyph + small red-dot badge overlay when the helper is in any non-OK state.** Two visual states on the menu-bar icon, mapped from the popover's five-state composite:
 
-- **Single glyph, color-shift state.** Tinted accent color when running, gray when stopped. Conflicts with the template-image convention (template images can't carry color). Choosing this means accepting that the menu bar icon will not auto-adapt to dark mode.
-- **Single glyph, badge overlay.** Template-friendly base glyph + small red dot in a corner when the helper is stopped or crashed. Idiomatic on macOS; matches how Calendar, Messages, etc. badge state.
+| Composite state (in the popover) | Menu-bar treatment |
+|---|---|
+| running | base glyph, no badge |
+| starting | base glyph, no badge (transient; not worth a distinct icon) |
+| stopped | base glyph + red badge |
+| unresponsive | base glyph + red badge |
+| port conflict | base glyph + red badge |
 
-Recommendation: badge overlay. Stay in the template-image lane.
+The menu-bar icon is a binary "OK / not OK". The popover names the specific failure mode when the user clicks. Idiomatic on macOS (Calendar, Messages, etc. badge state the same way) and template-image-compatible — the base glyph adapts to light/dark/tinted menu bars; the red badge is a small fixed-color overlay added by Pillow at icon-build time (per-state variant) or composited at runtime.
+
+Rejected alternative: single glyph with color-shift (tinted accent vs gray) to indicate state. Conflicts with the template-image convention — template images can't carry color. Picking that direction would mean accepting that the menu-bar icon doesn't auto-adapt to light/dark/tinted modes, which trades real UX hygiene for a one-line implementation saving.
 
 ### R4. Hide app from Dock (user preference)
 
