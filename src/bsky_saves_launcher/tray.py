@@ -103,9 +103,6 @@ class TrayApp:
         self._on_open_status = on_open_status
         self._icon: pystray.Icon | None = None
 
-    def _on_open_gui(self, icon, item) -> None:  # noqa: F821
-        _open_or_focus_gui()
-
     # NOTE: "Copy pairing token" was a tray menu item in v0.2.0 but caused two
     # UX issues: (1) macOS `display notification` adds a "Show" button that
     # opens Script Editor, which is jarring; (2) the action belongs in the
@@ -138,9 +135,11 @@ class TrayApp:
         """Block on the pystray event loop. Must be called on the main thread."""
         import pystray
 
+        # Left-click → popover (default action). Right-click → menu with
+        # Quit as a safety net. "Open GUI" lives inside the popover so the
+        # popover is the single status surface; the tray menu stays minimal.
         menu = pystray.Menu(
-            pystray.MenuItem("Show status...", self._on_default),
-            pystray.MenuItem("Open GUI", self._on_open_gui),
+            pystray.MenuItem("Show status", self._on_default, default=True),
             pystray.MenuItem("Quit", self._on_quit),
         )
         self._icon = pystray.Icon(

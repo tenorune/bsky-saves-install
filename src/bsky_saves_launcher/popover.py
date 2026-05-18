@@ -90,7 +90,7 @@ def _status_line(snapshot) -> str:
     return str(state.value)
 
 
-def _build_default_view(ak, on_copy_token, on_show_more, targets_out: list):
+def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_out: list):
     """Build the Default view's NSView tree and return the root + handles.
 
     Returns (root_view, status_label, copy_button, copy_button_default_title).
@@ -117,6 +117,18 @@ def _build_default_view(ak, on_copy_token, on_show_more, targets_out: list):
     status_label = NSTextField.labelWithString_("Loading…")
     stack.addArrangedSubview_(status_label)
 
+    open_gui_button = NSButton.buttonWithTitle_target_action_(
+        "Open GUI",
+        None,
+        None,
+    )
+    open_gui_button.setBezelStyle_(1)
+    open_gui_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_gui)
+    targets_out.append(open_gui_target)
+    open_gui_button.setTarget_(open_gui_target)
+    open_gui_button.setAction_("invoke:")
+    stack.addArrangedSubview_(open_gui_button)
+
     copy_button = NSButton.buttonWithTitle_target_action_(
         "Copy pairing token",
         None,
@@ -142,7 +154,7 @@ def _build_default_view(ak, on_copy_token, on_show_more, targets_out: list):
     more_button.setAction_("invoke:")
     stack.addArrangedSubview_(more_button)
 
-    stack.setFrame_(((0, 0), (260, 120)))
+    stack.setFrame_(((0, 0), (260, 160)))
 
     return stack, status_label, copy_button, copy_button_default_title
 
@@ -357,6 +369,7 @@ class StatusPopover:
 
         default_root, status_label, copy_button, copy_default_title = _build_default_view(
             ak,
+            on_open_gui=self._on_open_gui,
             on_copy_token=self._on_copy_token,
             on_show_more=self._on_show_more,
             targets_out=self._button_targets,
@@ -417,6 +430,11 @@ class StatusPopover:
                 _format_versions(launcher_version, snapshot.helper_version, snapshot.gui_version)
             )
         self._last_snapshot = snapshot
+
+    def _on_open_gui(self) -> None:
+        from bsky_saves_launcher.tray import _open_or_focus_gui
+
+        _open_or_focus_gui()
 
     def _on_copy_token(self) -> None:
         from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
