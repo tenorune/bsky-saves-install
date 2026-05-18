@@ -28,27 +28,61 @@ The bigger priorities for this spec are the launcher-internal column and a small
 
 ## Requirements captured to date
 
-### R1. Pairing token, copyable
+The popover has two views, navigable via a gear/ellipsis icon in the default view's corner (stacked-nav style: tap → swap to the secondary view; back chevron → return).
 
-Show the pairing token (currently stored at `~/Library/Application Support/bsky-saves/token`) so the user has an easy way to grab it for hosted-PWA pairing without rummaging in the filesystem. Render as a short identifier (first 8 hex chars or similar — a recognizable prefix, not the whole secret) with a small "copy" icon next to it that copies the **full** token to the clipboard. The truncated display protects against shoulder-surfing in screenshots while keeping the copy affordance.
+### Default view
 
-**Why it matters:** discovered during the v0.1.0 smoke when a user pairing to `saves.lightseed.net` had to navigate `~/Library/Application Support/bsky-saves/` in Finder to find the token file. That's friction we can erase cheaply.
+The "is it working / get the token" surface, optimized for glance.
 
-### R2. Helper version + protocol
+**D1. Composite helper status.** A single status line combining the launcher's internal Supervisor signal (is the helper thread/process alive?) with the helper's own `/ping` response. Possible states with intended wording:
 
-From the helper's `/ping` response: `version`, `protocol`, `gui_bundled` (the bundled GUI version string — not a boolean; see lessons doc § 7). Useful for "is this the right helper version?" debugging.
+- "running" — supervisor alive AND `/ping` recently 200; show uptime ("running 47 min") and last-seen timestamp.
+- "starting" — supervisor alive AND `/ping` not yet 200 (typically a 1–2 s window after launch).
+- "stopped" — supervisor dead (helper thread/process exited).
+- "unresponsive" — supervisor alive but `/ping` is timing out or erroring; helper is wedged.
+- "port conflict" — supervisor dead but something else on `127.0.0.1:47826` is answering `/ping` (commonly a parallel `pipx install bsky-saves`).
 
-### R3. Helper status indicator
+The user sees the composite, not the two underlying signals. The discrimination matters only because the failure-mode wording differs per case (e.g. "port conflict" suggests a different remedy than "unresponsive").
 
-"running" / "starting" / "stopped" mirroring the tray-icon state (which today is just a green/gray dot — see icon-design open question below).
+**D2. Pairing token, truncated + copy.** Show the pairing token (currently stored at `~/Library/Application Support/bsky-saves/token`) so the user has an easy way to grab it for hosted-PWA pairing without rummaging in the filesystem. Render as a short identifier (first 8 hex chars or similar — a recognizable prefix, not the whole secret) with a small "copy" icon next to it that copies the **full** token to the clipboard. The truncated display protects against shoulder-surfing in screenshots while keeping the copy affordance.
 
-### R4. Recent log tail
+**Why D2 matters:** discovered during the v0.1.0 smoke when a user pairing to `saves.lightseed.net` had to navigate `~/Library/Application Support/bsky-saves/` in Finder to find the token file. That's friction we can erase cheaply.
 
-The supervisor's ring buffer was originally part of the v0.1 design (200 lines from `bsky-saves serve`'s stdout/stderr). When we moved to in-thread execution we lost stdout/stderr capture; the ring is empty in v0.1. Restoring it requires redirecting `sys.stdout` / `sys.stderr` to a write-through proxy while the helper thread runs — doable, but the global-state side effect on the launcher process needs care.
+### Secondary "More" panel
 
-### R5. Quit button
+Opened from the default view's gear/ellipsis icon. Settings above; versions as an About footer.
 
-Mirror of the tray "Quit" menu item, useful when the status window is focused and reaching for the menu bar isn't ergonomic.
+**M1. Show in Dock** — toggle macOS activation policy (Accessory / Regular). Persisted to `~/Library/Application Support/bsky-saves-launcher/preferences.json` (or the project's chosen config path). See sibling spec `2026-05-18-launcher-ux.md` § R4 for the underlying mechanics.
+
+**M2. Start at login** — toggle a LaunchAgent plist at `~/Library/LaunchAgents/net.lightseed.bsky-saves-launcher.plist`. Off by default.
+
+**M3. Quit** — terminates the launcher process (and its supervised helper thread). Same effect as the tray "Quit" item; included here so the popover is a complete control surface when focused.
+
+**M4. About / version footer** — three short lines, small text at the bottom of the panel:
+- Launcher version (e.g. "Bsky Saves 0.1.3").
+- Bundled helper version (e.g. "bsky-saves 0.6.6") — read from `/ping`.
+- Bundled GUI version (e.g. "GUI 0.6.3") — read from `/ping`'s `gui_bundled` field.
+
+### Explicitly out of scope
+
+- **TLS workaround status / env-var overrides.** Power-user debug surface; not user-facing. Available via the env vars themselves + `log show --predicate 'process == "Bsky Saves"'`.
+- **Recent log tail / stdout-capture restoration.** Useful for debugging but adds substantial scope (stdout/stderr proxy that doesn't pollute launcher-side output). Defer to a later spec if needed; until then, `log show` covers the debugging use case for anyone who needs it.
+
+### Where each value comes from
+
+| Element | Source | Cost |
+|---|---|---|
+| D1 status (alive / dead) | Launcher's `Supervisor.is_alive()` | Free |
+| D1 status (responsive / wedged / port-conflict) | Helper `/ping` round-trip + comparison with supervisor | Free (calls existing endpoint) |
+| D1 uptime, last-seen-OK | Launcher-internal timestamps | Free |
+| D2 pairing token | Read `~/Library/Application Support/bsky-saves/token` | Free |
+| M1 Show in Dock toggle | `NSApp.setActivationPolicy_()` + local pref file | Free |
+| M2 Start at login | Write `~/Library/LaunchAgents/*.plist` | Free |
+| M3 Quit | `os._exit(0)` | Free |
+| M4 launcher version | `bsky_saves_launcher.__version__` | Free |
+| M4 helper version + GUI version | `/ping` payload (cached) | Free |
+
+No new helper endpoints required for this v1.
 
 ## Open questions for the full spec
 
