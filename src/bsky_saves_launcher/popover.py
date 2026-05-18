@@ -57,6 +57,117 @@ def _import_appkit():
     }
 
 
+def _format_uptime(seconds: float | None) -> str:
+    """Human-readable uptime (e.g. '47 min', '3 h 12 min')."""
+    if seconds is None or seconds < 1:
+        return ""
+    s = int(seconds)
+    if s < 60:
+        return f"{s} s"
+    if s < 3600:
+        return f"{s // 60} min"
+    h, rem = divmod(s, 3600)
+    m = rem // 60
+    return f"{h} h {m} min" if m else f"{h} h"
+
+
+def _status_line(snapshot) -> str:
+    """Human-facing single-line summary of the composite state."""
+    from bsky_saves_launcher.health import HelperState
+
+    state = snapshot.state
+    uptime = _format_uptime(snapshot.uptime_seconds)
+    if state is HelperState.RUNNING:
+        return f"Running ({uptime})" if uptime else "Running"
+    if state is HelperState.STARTING:
+        return "Starting…"
+    if state is HelperState.STOPPED:
+        return "Stopped"
+    if state is HelperState.UNRESPONSIVE:
+        return "Unresponsive — helper not answering"
+    if state is HelperState.PORT_CONFLICT:
+        return "Port conflict — another bsky-saves is bound to 47826"
+    return str(state.value)
+
+
+def _build_default_view(ak, on_copy_token, on_show_more):
+    """Build the Default view's NSView tree and return the root + handles.
+
+    Returns (root_view, status_label, copy_button, copy_button_default_title).
+    """
+    from AppKit import (  # type: ignore[import-not-found]
+        NSButton,
+        NSStackView,
+        NSStackViewDistributionFill,
+        NSTextField,
+        NSUserInterfaceLayoutOrientationVertical,
+    )
+
+    stack = NSStackView.alloc().init()
+    stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    stack.setDistribution_(NSStackViewDistributionFill)
+    stack.setSpacing_(8.0)
+    stack.setEdgeInsets_((12, 12, 12, 12))  # T L B R
+
+    status_label = NSTextField.labelWithString_("Loading…")
+    stack.addArrangedSubview_(status_label)
+
+    copy_button = NSButton.buttonWithTitle_target_action_(
+        "Copy pairing token",
+        None,
+        None,
+    )
+    copy_button_default_title = "Copy pairing token"
+    copy_button.setBezelStyle_(1)  # NSBezelStyleRounded
+    copy_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_copy_token))
+    copy_button.setAction_("invoke:")
+    stack.addArrangedSubview_(copy_button)
+
+    more_button = NSButton.buttonWithTitle_target_action_(
+        "More…",
+        None,
+        None,
+    )
+    more_button.setBezelStyle_(1)
+    more_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_show_more))
+    more_button.setAction_("invoke:")
+    stack.addArrangedSubview_(more_button)
+
+    stack.setFrame_(((0, 0), (260, 120)))
+
+    return stack, status_label, copy_button, copy_button_default_title
+
+
+def _build_callback_target_class():
+    """Define the NSObject-derived button target class. Returns the class."""
+    from Foundation import NSObject  # type: ignore[import-not-found]
+
+    class _PyCallbackTarget(NSObject):
+        def initWithCallable_(self, callable_):
+            self = NSObject.init(self)
+            if self is None:
+                return None
+            self._callable = callable_
+            return self
+
+        def invoke_(self, _sender):
+            try:
+                self._callable()
+            except Exception:
+                pass
+
+    return _PyCallbackTarget
+
+
+_PyCallbackTarget = None  # lazy class, built on first popover construction
+
+
+def _ensure_callback_target_class() -> None:
+    global _PyCallbackTarget
+    if _PyCallbackTarget is None and sys.platform == "darwin":
+        _PyCallbackTarget = _build_callback_target_class()
+
+
 class StatusPopover:
     """Owns the popover and its lifecycle. Constructed lazily on first show."""
 
@@ -70,6 +181,9 @@ class StatusPopover:
         self._helper_started: float | None = None
         self._last_ping_ok: float | None = None
         self._last_snapshot = None
+        self._status_label = None
+        self._copy_button = None
+        self._copy_default_title = "Copy pairing token"
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -93,11 +207,20 @@ class StatusPopover:
         self._start_refresh_timer(ak)
 
     def _construct(self, ak) -> None:
-        """Build the popover + a placeholder NSViewController on first show."""
-        # Placeholder controller; Tasks 6 + 7 replace this with the real
-        # navigation controller hosting Default + More views.
+        """Build the popover + the Default view controller on first show."""
+        _ensure_callback_target_class()
         controller = ak["NSViewController"].alloc().init()
+        root, status_label, copy_button, copy_default_title = _build_default_view(
+            ak,
+            on_copy_token=self._on_copy_token,
+            on_show_more=self._on_show_more,
+        )
+        controller.setView_(root)
         self._content_controller = controller
+        self._status_label = status_label
+        self._copy_button = copy_button
+        self._copy_default_title = copy_default_title
+
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
         popover.setContentViewController_(controller)
@@ -115,7 +238,7 @@ class StatusPopover:
         self._timer = timer
 
     def _on_tick(self) -> None:
-        """Refresh-timer callback. Replaced in Task 6 with a real view update."""
+        """Refresh-timer callback — recompute health and update the status label."""
         from bsky_saves_launcher.health import compute_health
 
         snapshot = compute_health(
@@ -125,7 +248,45 @@ class StatusPopover:
         )
         if snapshot.last_seen_ok is not None:
             self._last_ping_ok = snapshot.last_seen_ok
+        if self._status_label is not None:
+            self._status_label.setStringValue_(_status_line(snapshot))
         self._last_snapshot = snapshot
+
+    def _on_copy_token(self) -> None:
+        from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
+        from bsky_saves_launcher.token import read_pairing_token
+
+        token = read_pairing_token()
+        if token is None:
+            self._flash_copy_button_title("No token yet")
+            return
+        try:
+            copy_to_clipboard(token)
+        except ClipboardError:
+            self._flash_copy_button_title("Copy failed")
+            return
+        self._flash_copy_button_title("Copied ✓")
+
+    def _flash_copy_button_title(self, title: str, *, revert_after_s: float = 1.5) -> None:
+        """Temporarily change the Copy button's title, then revert."""
+        if self._copy_button is None:
+            return
+        self._copy_button.setTitle_(title)
+        from AppKit import NSTimer  # type: ignore[import-not-found]
+
+        def _revert(_t):
+            if self._copy_button is not None:
+                self._copy_button.setTitle_(self._copy_default_title)
+
+        NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            revert_after_s,
+            False,
+            _revert,
+        )
+
+    def _on_show_more(self) -> None:
+        # Task 7 wires this up to push the More controller onto a nav stack.
+        pass
 
     def _stop_refresh_timer(self) -> None:
         if self._timer is not None:
