@@ -523,6 +523,15 @@ class StatusPopover:
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
         popover.setContentSize_((260, 120))  # initial size; show() updates on each open
         popover.setContentViewController_(controller)
+        # Hide the popover's arrow. NSPopover doesn't expose a public API
+        # for this, but the private KVC key `shouldHideAnchor` is honored
+        # by AppKit and is the standard trick used in menu-bar apps that
+        # want a flat popover. Wrapped in try/except — if Apple ever drops
+        # the key, the arrow comes back but nothing breaks.
+        try:
+            popover.setValue_forKey_(True, "shouldHideAnchor")
+        except Exception as exc:
+            print(f"[popover] shouldHideAnchor not honored: {exc!r}", file=sys.stderr)
         # Delegate handles popoverDidClose_ → un-highlight tray button + stop
         # refresh timer. Retain it on self; NSPopover doesn't retain delegate.
         self._popover_delegate = _build_popover_delegate_class().alloc().initWithOwner_(self)
