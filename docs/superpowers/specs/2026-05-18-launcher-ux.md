@@ -19,9 +19,11 @@ For the public-release milestone we want richer, more intentional presentation. 
 
 ### R1. Custom app icon
 
-A real brand mark in `.icns` form, used by Finder, Spotlight, Launchpad, the Dock when the app is visible there, and the `.dmg` background. Source: a single high-resolution PNG; build a multi-resolution `.icns` via `iconutil` or equivalent.
+A real brand mark in `.icns` form, used by Finder, Spotlight, Launchpad, the Dock when the app is visible there, and the `.dmg` background. Source: derived from the GUI's existing icon assets (PWA manifest icons / favicon / dock-ready PNGs in `tenorune/bsky-saves-gui`). Visual identity is shared across the trio — the hosted PWA, the bundled GUI, and the installer all render the same mark.
 
-Open: who designs the brand mark? Sketches of two or three directions (e.g., bookmark + cloud, open-book-with-tilde, compass, derived from `bsky-saves-gui`'s favicon) before locking. The icon work is small but a one-way door once it ships.
+**Vendoring approach:** commit a copy of the GUI's largest-resolution source PNG into `src/bsky_saves_launcher/resources/` in this repo, and a build-time `iconutil` (or equivalent) step that derives the multi-resolution `.icns` from it. Manual bump when the GUI's brand mark changes (rare). Document the upstream source path in a short header comment next to the resource so the chain of custody is traceable.
+
+Alternative considered and rejected: pulling the icon dynamically from a GUI release tarball at Briefcase build time. Adds network fragility + an extra fetch step; brand marks change rarely enough that manual vendoring is right-sized.
 
 ### R2. Custom menu-bar icon (template image)
 
@@ -30,7 +32,7 @@ Replace the runtime-drawn circle with a designed glyph loaded from `resources/`.
 - 22pt size at 1x, 44px at 2x — ship at 88px source for safety.
 - Monochrome / "template image" convention. macOS handles light/dark and highlight states automatically *if* the NSImage's `setTemplate:` flag is set. pystray does not set it by default; we'll need to reach into pystray's macOS backend (`pystray._darwin.Icon`'s `_status_item`) and call `setImage:` with a template-flagged NSImage via PyObjC. Couples us to pystray's internals; document the patch.
 
-Open: glyph design (should pair with the brand mark from R1 but be silhouette-friendly).
+**Source:** derived from the same GUI-owned brand mark used for R1, reduced to a single-color silhouette that scales cleanly to 22pt. If the GUI's existing icon is already silhouette-friendly (a single glyph rather than a richly-coloured illustration), use it directly. If it's not, a single-pass simplification in a vector tool reduces it to a template-image version. Vendor the resulting monochrome PNG (or SVG → PNG export) into `src/bsky_saves_launcher/resources/` alongside the `.icns` source.
 
 ### R3. State indicator in the menu-bar icon
 
@@ -81,7 +83,7 @@ Recommendation: ship **(1)** as a tray menu item in the public-release milestone
 
 ## Open questions
 
-- **Brand identity sequencing.** R1 + R2 + R3 (all icon-design) share a source asset. Sketch the brand mark first as a single small decision; don't try to design four things at once.
+- ~~**Brand identity sequencing.**~~ **Resolved: use the GUI's icon assets as the source of truth.** R1 + R2 + R3 all derive from `tenorune/bsky-saves-gui`'s existing brand mark; visual identity is shared across the trio. Vendor a copy into `src/bsky_saves_launcher/resources/` and bump manually when the GUI's mark changes.
 - **Onboarding.** First-launch UX — discoverable menu-bar icon, "we're up here" hint, etc. Out of scope here; flag for the public-release-milestone spec.
 - **Accessibility.** Menu-bar icons need to work for users with limited color perception. The badge-overlay direction in R3 helps; flat-color states (running=green) hurt. Worth being explicit when the glyph is designed.
 
