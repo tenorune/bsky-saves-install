@@ -106,6 +106,45 @@ class TrayApp:
     def _on_open_gui(self, icon, item) -> None:  # noqa: F821
         _open_or_focus_gui()
 
+    def _on_copy_token(self, icon, item) -> None:  # noqa: F821, ARG002
+        """Read the pairing token from disk and copy to the clipboard.
+
+        Surfaces a brief macOS notification on success or failure so the
+        user knows the action took. The token value is not displayed
+        anywhere in the UI — clipboard is the only surface it touches.
+        """
+        from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
+        from bsky_saves_launcher.token import read_pairing_token
+
+        token = read_pairing_token()
+        if token is None:
+            self._notify(
+                "No pairing token yet",
+                "The helper hasn't created a token yet. It's generated on first run.",
+            )
+            return
+        try:
+            copy_to_clipboard(token)
+        except ClipboardError as exc:
+            self._notify("Copy failed", str(exc))
+            return
+        self._notify("Pairing token copied", "Paste it into saves.lightseed.net when prompted.")
+
+    def _notify(self, title: str, body: str) -> None:
+        """Show a brief macOS notification via osascript."""
+        import subprocess
+
+        # Escape double quotes for AppleScript literal strings.
+        safe_title = title.replace('"', '\\"')
+        safe_body = body.replace('"', '\\"')
+        script = (
+            f'display notification "{safe_body}" with title "{safe_title}"'
+        )
+        try:
+            subprocess.run(["osascript", "-e", script], check=False, timeout=5.0)
+        except (subprocess.SubprocessError, OSError):
+            pass
+
     def _on_quit(self, icon, item) -> None:  # noqa: F821
         # The helper runs in a daemon thread inside this process and can't be
         # stopped cleanly (Python threads aren't killable). Terminate the
@@ -124,6 +163,7 @@ class TrayApp:
         menu = pystray.Menu(
             pystray.MenuItem("Show status...", self._on_default),
             pystray.MenuItem("Open GUI", self._on_open_gui),
+            pystray.MenuItem("Copy pairing token", self._on_copy_token),
             pystray.MenuItem("Quit", self._on_quit),
         )
         self._icon = pystray.Icon(
