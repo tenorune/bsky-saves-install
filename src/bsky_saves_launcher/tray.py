@@ -6,7 +6,6 @@ exposes a callback hook for opening the status window on icon click.
 
 from __future__ import annotations
 
-import os
 import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -103,50 +102,20 @@ class TrayApp:
         self._on_open_status = on_open_status
         self._icon: pystray.Icon | None = None
 
-    # NOTE: "Copy pairing token" was a tray menu item in v0.2.0 but caused two
-    # UX issues: (1) macOS `display notification` adds a "Show" button that
-    # opens Script Editor, which is jarring; (2) the action belongs in the
-    # status surface (popover), not the menu. The functionality lives in
-    # bsky_saves_launcher.token + .clipboard; reattach via the popover's
-    # Copy-token button when that lands. See
-    # docs/superpowers/specs/2026-05-17-status-window-contents.md D2.
-
-    def _on_quit(self, icon, item) -> None:  # noqa: F821
-        # The helper runs in a daemon thread inside this process and can't be
-        # stopped cleanly (Python threads aren't killable). Terminate the
-        # whole process to take it down.
-        icon.stop()
-        os._exit(0)
-
-    def _on_default(self, icon, item) -> None:  # noqa: F821
-        """Triggered by the tray menu's 'Show status…' item."""
-        import sys
-
-        print("[tray] Show status clicked → calling on_open_status", file=sys.stderr)
-        try:
-            self._on_open_status()
-        except Exception as exc:
-            print(f"[tray] on_open_status raised: {exc!r}", file=sys.stderr)
-            import traceback
-
-            traceback.print_exc(file=sys.stderr)
-
     def run(self) -> None:
         """Block on the pystray event loop. Must be called on the main thread."""
         import pystray
 
-        # Left-click → popover (default action). Right-click → menu with
-        # Quit as a safety net. "Open GUI" lives inside the popover so the
-        # popover is the single status surface; the tray menu stays minimal.
-        menu = pystray.Menu(
-            pystray.MenuItem("Show status", self._on_default, default=True),
-            pystray.MenuItem("Quit", self._on_quit),
-        )
+        # No pystray menu — pystray's macOS backend forces left-click to
+        # show the menu whenever one is attached (HAS_DEFAULT_ACTION=False
+        # in pystray/_darwin.py, "We support only a default action with an
+        # empty menu"). Left-click must open the popover, so we omit the
+        # menu and wire the NSStatusItem button's action directly in
+        # _on_pystray_ready. Quit lives in the popover.
         self._icon = pystray.Icon(
             name="bsky-saves",
             icon=_make_icon_image(running=self._supervisor.is_alive()),
             title="BSky Saves",
-            menu=menu,
         )
         # `setup` runs after pystray's NSStatusItem is created (the constructor
         # only stashes our PIL image; the native item doesn't exist yet at
@@ -163,6 +132,48 @@ class TrayApp:
         if self._icon is not None:
             self._icon.visible = True
         self._flag_macos_template_image()
+        self._install_click_action()
+
+    def _install_click_action(self) -> None:
+        """Wire the NSStatusItem button to open the popover on left-click.
+
+        pystray sets its own button target/action in _darwin.Icon._create, but
+        since we passed no menu, that wiring fires the icon's default-item
+        callback (which doesn't exist for us). We override it here to call
+        on_open_status directly. The button target NSObject must be retained
+        on `self` — NSButton.setTarget_ doesn't retain its target, so without
+        the strong ref Python would GC it and the action would no-op.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            import objc  # type: ignore[import-not-found]  # noqa: F401
+            from Foundation import NSObject  # type: ignore[import-not-found]
+
+            on_open_status = self._on_open_status
+
+            class _ClickTarget(NSObject):
+                def invoke_(self, _sender):
+                    try:
+                        on_open_status()
+                    except Exception as exc:
+                        import traceback
+
+                        print(f"[tray] popover open failed: {exc!r}", file=sys.stderr)
+                        traceback.print_exc(file=sys.stderr)
+
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            target = _ClickTarget.alloc().init()
+            self._click_target = target  # retain — see docstring
+            button = status_item.button()
+            button.setTarget_(target)
+            button.setAction_("invoke:")
+        except Exception as exc:
+            print(f"[tray] _install_click_action failed: {exc!r}", file=sys.stderr)
 
     def _flag_macos_template_image(self) -> None:
         """Configure the menu-bar NSImage to match Apple's HIG.
