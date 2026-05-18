@@ -62,6 +62,17 @@ human review.
 See `docs/superpowers/specs/2026-05-16-bsky-saves-install-v0.1-design.md`
 for the full design spec.
 
+## Resources
+
+The launcher's icon assets live under
+`src/bsky_saves_launcher/resources/`. Source of truth is the brand
+mark in `tenorune/bsky-saves-gui`; the macOS iconset and menu-bar
+silhouette are derived from the same SVG source via
+`scripts/build_iconset.py` and `scripts/build_menubar_icon.py`
+respectively (both use `cairosvg`, a dev-only dependency). See
+`src/bsky_saves_launcher/resources/README.md` for source-of-truth
+provenance and refresh steps.
+
 ## License
 
 MIT

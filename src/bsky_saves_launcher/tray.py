@@ -11,7 +11,7 @@ import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 if TYPE_CHECKING:
     import pystray
@@ -76,13 +76,18 @@ def _open_or_focus_gui() -> None:
     webbrowser.open(LOCAL_GUI_URL)
 
 
-def _make_icon_image(*, running: bool) -> Image.Image:
-    """Render a 64x64 RGBA icon. Green dot when running, gray when stopped."""
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    color = (60, 200, 90, 255) if running else (160, 160, 160, 255)
-    draw.ellipse((8, 8, 56, 56), fill=color)
-    return img
+def _make_icon_image(*, running: bool) -> Image.Image:  # noqa: ARG001 (running unused in v0.2.0)
+    """Load the bundled menu-bar silhouette.
+
+    v0.2.0: a single template-image silhouette regardless of state. State
+    indication via badge overlay is planned for a later release (see
+    docs/superpowers/specs/2026-05-18-launcher-ux.md R3).
+    """
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    path = here / "resources" / "menubar.png"
+    return Image.open(path).convert("RGBA")
 
 
 class TrayApp:
@@ -100,6 +105,45 @@ class TrayApp:
 
     def _on_open_gui(self, icon, item) -> None:  # noqa: F821
         _open_or_focus_gui()
+
+    def _on_copy_token(self, icon, item) -> None:  # noqa: F821, ARG002
+        """Read the pairing token from disk and copy to the clipboard.
+
+        Surfaces a brief macOS notification on success or failure so the
+        user knows the action took. The token value is not displayed
+        anywhere in the UI — clipboard is the only surface it touches.
+        """
+        from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
+        from bsky_saves_launcher.token import read_pairing_token
+
+        token = read_pairing_token()
+        if token is None:
+            self._notify(
+                "No pairing token yet",
+                "The helper hasn't created a token yet. It's generated on first run.",
+            )
+            return
+        try:
+            copy_to_clipboard(token)
+        except ClipboardError as exc:
+            self._notify("Copy failed", str(exc))
+            return
+        self._notify("Pairing token copied", "Paste it into saves.lightseed.net when prompted.")
+
+    def _notify(self, title: str, body: str) -> None:
+        """Show a brief macOS notification via osascript."""
+        import subprocess
+
+        # Escape double quotes for AppleScript literal strings.
+        safe_title = title.replace('"', '\\"')
+        safe_body = body.replace('"', '\\"')
+        script = (
+            f'display notification "{safe_body}" with title "{safe_title}"'
+        )
+        try:
+            subprocess.run(["osascript", "-e", script], check=False, timeout=5.0)
+        except (subprocess.SubprocessError, OSError):
+            pass
 
     def _on_quit(self, icon, item) -> None:  # noqa: F821
         # The helper runs in a daemon thread inside this process and can't be
@@ -119,6 +163,7 @@ class TrayApp:
         menu = pystray.Menu(
             pystray.MenuItem("Show status...", self._on_default),
             pystray.MenuItem("Open GUI", self._on_open_gui),
+            pystray.MenuItem("Copy pairing token", self._on_copy_token),
             pystray.MenuItem("Quit", self._on_quit),
         )
         self._icon = pystray.Icon(
@@ -127,7 +172,34 @@ class TrayApp:
             title="Bsky Saves",
             menu=menu,
         )
+        self._flag_macos_template_image()
         self._icon.run()
+
+    def _flag_macos_template_image(self) -> None:
+        """Tell macOS the menu-bar NSImage is a template image.
+
+        pystray's macOS backend builds an NSImage from the Pillow image we
+        passed in, but it does not call setTemplate:YES. Setting the template
+        flag tells macOS to handle light/dark/tinted adaptation automatically.
+        Reaches into pystray's _darwin.Icon._status_item via PyObjC. Couples
+        us to a specific pystray internal — revisit if pystray restructures.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            ns_image = status_item.button().image()
+            if ns_image is not None:
+                ns_image.setTemplate_(True)
+        except Exception:
+            # Patch is best-effort — if pystray's internals shifted, fall
+            # back to the un-flagged image. The launcher still works; the
+            # icon just doesn't auto-adapt to dark mode.
+            pass
 
     def refresh_icon(self) -> None:
         """Re-render the icon image based on supervisor state."""
