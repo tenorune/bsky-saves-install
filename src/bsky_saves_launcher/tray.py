@@ -132,7 +132,34 @@ class TrayApp:
             title="Bsky Saves",
             menu=menu,
         )
+        self._flag_macos_template_image()
         self._icon.run()
+
+    def _flag_macos_template_image(self) -> None:
+        """Tell macOS the menu-bar NSImage is a template image.
+
+        pystray's macOS backend builds an NSImage from the Pillow image we
+        passed in, but it does not call setTemplate:YES. Setting the template
+        flag tells macOS to handle light/dark/tinted adaptation automatically.
+        Reaches into pystray's _darwin.Icon._status_item via PyObjC. Couples
+        us to a specific pystray internal — revisit if pystray restructures.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            ns_image = status_item.button().image()
+            if ns_image is not None:
+                ns_image.setTemplate_(True)
+        except Exception:
+            # Patch is best-effort — if pystray's internals shifted, fall
+            # back to the un-flagged image. The launcher still works; the
+            # icon just doesn't auto-adapt to dark mode.
+            pass
 
     def refresh_icon(self) -> None:
         """Re-render the icon image based on supervisor state."""
