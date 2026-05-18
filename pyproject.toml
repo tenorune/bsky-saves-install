@@ -44,7 +44,7 @@ addopts = "-q"
 [tool.briefcase]
 project_name = "Bsky Saves"
 bundle = "net.lightseed"
-version = "0.1.3"
+version = "0.2.0"
 url = "https://github.com/tenorune/bsky-saves-install"
 license = "MIT"
 author = "tenorune"
@@ -56,6 +56,7 @@ description = "Local helper for bsky-saves bookmarks."
 long_description = "Menu-bar launcher that supervises bsky-saves serve and exposes a local helper at http://127.0.0.1:47826/."
 sources = ["src/bsky_saves_launcher"]
 test_sources = ["tests"]
+icon = "src/bsky_saves_launcher/resources/icon"
 
 # Runtime dependencies bundled into the .app. The bsky-saves wheel is pulled
 # from PyPI by version pin; for reproducible/offline builds, run
