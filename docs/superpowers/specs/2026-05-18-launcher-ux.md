@@ -72,21 +72,44 @@ Apps shipping this pattern in production: Hammerspoon, Alfred, Bartender. The ro
 
 Open: do we ever want the regular policy by default? (E.g., on first launch before the user has expressed a preference, do they see the Dock entry?) **Resolved: hidden by default** (`NSApplicationActivationPolicyAccessory`). The app is a menu-bar daemon from the moment it starts. Reasons: daemon launchers belong in the menu bar by genre convention (Bartender, Hammerspoon, AeroSpace, Rectangle, Stats all default this way); the discoverability problem on first launch is better solved by a one-time onboarding hint pointing at the menu-bar icon than by a permanent Dock presence the user has to toggle off. The onboarding hint itself is out of scope for this spec; flag for the public-release-milestone spec.
 
-### R5. Skip the "Add to Dock" step (PWA-install adjacent)
+### R5. Skip the "Add to Dock" step (PWA-install adjacent) — DEFERRED
+
+**Status:** out of scope for the immediate launcher-UX work. Captured here so the full landscape is documented; the eventual implementer (if/when this is prioritized) has the design space mapped.
 
 The bundled GUI at `http://127.0.0.1:47826/` is a PWA. Today, "Open GUI" opens it as a regular browser tab; the user has to discover the browser's PWA-install affordance themselves to get a Dock-pinned standalone window.
 
-We **cannot** programmatically trigger the browser's PWA-install flow from outside the browser — that's a hard security gate the browser enforces.
+We **cannot** programmatically trigger the browser's PWA-install flow from outside the browser — that's a hard security gate the browser enforces. So "skip the Add to Dock step" reduces to "give the user a Dock-app-like experience without going through the browser's install flow."
 
-What we *can* do, in increasing scope:
+#### Catalog of options
 
-1. **App-mode Chrome/Chromium window.** Detect a Chromium-based browser (Chrome, Brave, Edge, Vivaldi) and launch a chrome-less window via `--app=http://127.0.0.1:47826/`. Looks and behaves like a PWA window without going through the install flow. Single-session — closes when dismissed. ~30 lines of Python + a tray menu item ("Open as standalone window"). Doesn't persist as a Dock entry.
+In increasing scope:
 
-2. **Bundle a webview.** Embed `pywebview` or PyObjC's WKWebView inside the launcher, load the local URL in it. We become the Dock entry. Real but architecturally significant — running a long-lived menu-bar process + a webview window from the same launcher has main-runloop coordination challenges on macOS, and dramatically expands what the launcher is responsible for.
+1. **App-mode Chromium window.** Detect a Chromium-based browser (Chrome, Brave, Edge, Vivaldi, Arc) and launch a chrome-less window via `--app=http://127.0.0.1:47826/`. Looks and behaves like a PWA window without going through the install flow. Single-session — closes when dismissed, no Dock entry persists. ~30 lines of Python + a tray menu item. Firefox has no equivalent flag; would degrade to a regular window.
 
-3. **Nativefier-style separate `.app`.** Ship a second `.app` alongside the launcher whose only job is to open the local URL as a Chrome-app-mode window. Coordinating their lifecycles is annoying but it produces a real "Bsky Saves" Dock-pinned shortcut.
+2. **Bundle a webview inside the launcher.** Embed `pywebview` or PyObjC's `WKWebView` in the launcher process, load the local URL in it. The launcher becomes the Dock entry — clicking the Dock icon brings up the GUI window. Architecturally significant: running a long-lived menu-bar process + a webview window from the same launcher has main-runloop coordination challenges on macOS, and dramatically expands what the launcher is responsible for.
 
-Recommendation: ship **(1)** as a tray menu item in the public-release milestone, and call it explicit-not-implicit. Decide on (2) or (3) separately, possibly never.
+3. **Nativefier-style separate `.app`.** Ship a second `.app` alongside the launcher whose only job is to open the local URL as a Chromium app-mode window. The user has a "Bsky Saves" Dock-pinned shortcut that's distinct from the menu-bar launcher. Coordinating their lifecycles (does quitting the launcher also kill the secondary `.app`? what if the user launches one without the other?) is annoying.
+
+4. **Documentation-only.** Tell the user how to invoke their browser's PWA-install flow manually. No code; lowest effort; relies on the user reading docs. The status quo.
+
+5. **Pre-built Automator/Shortcuts shortcut bundled in the `.dmg`.** Drop a small `.app` (Automator-built or Shortcuts-built) into the `.dmg` alongside the launcher that, when double-clicked, runs the Chromium `--app` invocation. User can drag it to the Dock manually. Lower implementation cost than (3); same UX limitation (manual drag-to-Dock).
+
+6. **Custom WKWebView-based companion in a separate `.app`.** Variant of (3) using Apple's WebKit directly via Swift/Obj-C, not Chromium. Tighter macOS integration, smaller binary, but needs native development outside the Python/Briefcase toolchain. Almost certainly not worth the leap for this project.
+
+7. **Browser extension that detects the URL and prompts install.** Adds a deploy surface (extension on a browser store, install instructions) just to surface the existing PWA-install affordance more aggressively. Architecturally clean for the launcher but moves complexity to a third deliverable.
+
+#### Recommendation when prioritized
+
+Start with (1) — minimal scope, real UX win, doesn't constrain later moves. Revisit (3) or (5) only if (1) proves insufficient (e.g., users want a persistent Dock-pinned shortcut that survives launcher restarts).
+
+#### Open questions for the eventual spec
+
+- **Collapse vs coexist.** If we ship (1) as a new tray action, do we keep the existing "Open GUI" (regular tab) item, or replace it with the new app-mode behavior? Coexisting respects user preference at the moment of action; collapsing is more opinionated about UX. Probably "coexist for v1, collapse later if telemetry justifies."
+- **Browser detection order.** Which Chromium variant does the launcher prefer if multiple are installed? User's default browser (if Chromium-based)? Hard-coded preference list? Tray submenu letting the user pick?
+- **Fallback when no Chromium found.** Pop a notification ("opens as a regular browser tab; no Chromium browser detected") and fall through to `webbrowser.open()`? Silent fallback? Disable the menu item with a tooltip explaining?
+- **Coexistence with helper-served GUI vs hosted PWA.** Does the app-mode window point at `http://127.0.0.1:47826/` (local, requires the helper) or `https://saves.lightseed.net` (hosted, doesn't)? Configurable per the popover's Settings? Different menu items for each?
+- **What happens if the user closes the app-mode window?** Does the tray menu item know it's closed? Should re-clicking it open a new window, or focus the existing one? (Browsers don't expose window-lifecycle hooks to external invokers; the launcher can't easily know.)
+- **Heavier shapes.** If (1) isn't enough, what's the decision criterion for moving to (3)/(5) vs accepting the friction? Concrete user-feedback trigger needed before the heavier paths earn their cost.
 
 ## Open questions
 
