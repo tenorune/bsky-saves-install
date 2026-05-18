@@ -71,7 +71,15 @@ def _install_tls_workaround() -> None:
     ssl.create_default_context = patched
 
 
-_install_tls_workaround()
+# Disabled by default as of v0.1.3: bsky-saves >= 0.6.6 ships its own
+# bsky_ssl_context() that applies a similar cipher reorder at every outbound
+# httpx call site, with certifi loaded explicitly. The installer no longer
+# needs to monkey-patch ssl.create_default_context globally — but the function
+# and env-var knobs stay in place as a break-glass override. Re-enable by
+# setting BSKY_SAVES_TLS_FORCE=1 in the env at launch. See docs/v0.1-lessons.md
+# and tenorune/bsky-saves#19 for the full history.
+if os.environ.get("BSKY_SAVES_TLS_FORCE"):
+    _install_tls_workaround()
 
 from bsky_saves.cli import main as bsky_saves_main  # noqa: E402
 
