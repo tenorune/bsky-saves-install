@@ -70,7 +70,7 @@ Known macOS quirks:
 
 Apps shipping this pattern in production: Hammerspoon, Alfred, Bartender. The rough edges are real but minor.
 
-Open: do we ever want the regular policy by default? (E.g., on first launch before the user has expressed a preference, do they see the Dock entry?) The argument for "hidden by default": daemon launchers typically belong in the menu bar. The argument against: a first-launch Dock entry is more discoverable. Probably "hidden by default, but show a one-time onboarding hint pointing at the menu-bar icon on first launch."
+Open: do we ever want the regular policy by default? (E.g., on first launch before the user has expressed a preference, do they see the Dock entry?) **Resolved: hidden by default** (`NSApplicationActivationPolicyAccessory`). The app is a menu-bar daemon from the moment it starts. Reasons: daemon launchers belong in the menu bar by genre convention (Bartender, Hammerspoon, AeroSpace, Rectangle, Stats all default this way); the discoverability problem on first launch is better solved by a one-time onboarding hint pointing at the menu-bar icon than by a permanent Dock presence the user has to toggle off. The onboarding hint itself is out of scope for this spec; flag for the public-release-milestone spec.
 
 ### R5. Skip the "Add to Dock" step (PWA-install adjacent)
 
