@@ -90,6 +90,39 @@ def _status_line(snapshot) -> str:
     return str(state.value)
 
 
+def _status_dot_color(state):
+    """NSColor for the status dot. Green when running, yellow while starting,
+    red for any failure mode."""
+    from AppKit import NSColor  # type: ignore[import-not-found]
+
+    from bsky_saves_launcher.health import HelperState
+
+    if state is HelperState.RUNNING:
+        return NSColor.systemGreenColor()
+    if state is HelperState.STARTING:
+        return NSColor.systemYellowColor()
+    return NSColor.systemRedColor()
+
+
+def _build_status_attributed(snapshot):
+    """Return an NSAttributedString with a colored '●' prefix + status text."""
+    from AppKit import (  # type: ignore[import-not-found]
+        NSForegroundColorAttributeName,
+    )
+    from Foundation import (  # type: ignore[import-not-found]
+        NSMutableAttributedString,
+    )
+
+    text = f"●  {_status_line(snapshot)}"
+    attr = NSMutableAttributedString.alloc().initWithString_(text)
+    attr.addAttribute_value_range_(
+        NSForegroundColorAttributeName,
+        _status_dot_color(snapshot.state),
+        (0, 1),
+    )
+    return attr
+
+
 def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_out: list):
     """Build the Default view's NSView tree and return the root + handles.
 
@@ -102,6 +135,7 @@ def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_ou
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
+        NSFont,
         NSStackView,
         NSStackViewDistributionFill,
         NSTextField,
@@ -112,9 +146,11 @@ def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_ou
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
     stack.setSpacing_(8.0)
-    stack.setEdgeInsets_((12, 12, 12, 12))  # T L B R
+    # Tight top inset so the status line sits near the top of the panel.
+    stack.setEdgeInsets_((6, 12, 12, 12))  # T L B R
 
-    status_label = NSTextField.labelWithString_("Loading…")
+    status_label = NSTextField.labelWithString_("●  Loading…")
+    status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     stack.addArrangedSubview_(status_label)
 
     open_gui_button = NSButton.buttonWithTitle_target_action_(
@@ -182,6 +218,7 @@ def _build_more_view(
         NSButton,
         NSControlStateValueOff,
         NSControlStateValueOn,
+        NSFont,
         NSStackView,
         NSStackViewDistributionFill,
         NSSwitch,
@@ -230,11 +267,24 @@ def _build_more_view(
     quit_button.setAction_("invoke:")
     stack.addArrangedSubview_(quit_button)
 
-    # Version footer (small label at the bottom; gets updated on each tick).
+    # Add visible breathing room between Quit and the version footer.
+    # setCustomSpacing_afterView_ overrides the default 8pt stack spacing
+    # for just this gap.
+    try:
+        stack.setCustomSpacing_afterView_(20.0, quit_button)
+    except Exception:
+        pass
+
+    # Version footer — two lines, small font:
+    #   bsky-saves <ver>
+    #   GUI <ver> · Installer <ver>
     version_label = NSTextField.labelWithString_("…")
+    version_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    version_label.setUsesSingleLineMode_(False)
+    version_label.setMaximumNumberOfLines_(2)
     stack.addArrangedSubview_(version_label)
 
-    stack.setFrame_(((0, 0), (260, 200)))
+    stack.setFrame_(((0, 0), (260, 220)))
 
     return stack, start_at_login_switch, version_label
 
@@ -277,9 +327,14 @@ def _wrap_in_active_visual_effect(inner):
 def _format_versions(
     launcher_version: str, helper_version: str | None, gui_version: str | None
 ) -> str:
+    """Two-line version footer.
+
+    Line 1: bsky-saves <helper version>
+    Line 2: GUI <gui version> · Installer <launcher version>
+    """
     helper = helper_version or "—"
     gui = gui_version or "—"
-    return f"BSky Saves {launcher_version} · bsky-saves {helper} · GUI {gui}"
+    return f"bsky-saves {helper}\nGUI {gui} · Installer {launcher_version}"
 
 
 def _build_callback_target_class():
@@ -561,7 +616,7 @@ class StatusPopover:
         if snapshot.last_seen_ok is not None:
             self._last_ping_ok = snapshot.last_seen_ok
         if self._status_label is not None:
-            self._status_label.setStringValue_(_status_line(snapshot))
+            self._status_label.setAttributedStringValue_(_build_status_attributed(snapshot))
         if self._version_label is not None:
             self._version_label.setStringValue_(
                 _format_versions(launcher_version, snapshot.helper_version, snapshot.gui_version)
