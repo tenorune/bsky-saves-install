@@ -22,6 +22,7 @@ dev = [
     "ruff>=0.5",
     "briefcase>=0.3.20",
     "cairosvg>=2.7",
+    "icnsutil>=1.1",
 ]
 
 [project.scripts]
@@ -44,7 +45,7 @@ addopts = "-q"
 [tool.briefcase]
 project_name = "Bsky Saves"
 bundle = "net.lightseed"
-version = "0.2.0"
+version = "0.2.1"
 url = "https://github.com/tenorune/bsky-saves-install"
 license = "MIT"
 author = "tenorune"
