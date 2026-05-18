@@ -1,10 +1,13 @@
-"""Launcher entry point — wires supervisor, tray, and status window together."""
+"""Launcher entry point — wires supervisor, tray, and popover together."""
 
 from __future__ import annotations
 
 import os
 import ssl
 import sys
+
+from bsky_saves_launcher.activation import apply_activation_policy
+from bsky_saves_launcher.preferences import load_preferences
 
 # TLS workaround for tenorune/bsky-saves#19 — AWS WAF rejects requests from the
 # bundled Python's OpenSSL 3.0.x default TLS handshake (JA3
@@ -85,7 +88,7 @@ if not os.environ.get("BSKY_SAVES_TLS_DISABLE"):
 
 from bsky_saves.cli import main as bsky_saves_main  # noqa: E402
 
-from bsky_saves_launcher.status_window import StatusWindow  # noqa: E402
+from bsky_saves_launcher.popover import StatusPopover  # noqa: E402
 from bsky_saves_launcher.supervisor import Supervisor  # noqa: E402
 from bsky_saves_launcher.tray import TrayApp  # noqa: E402
 
@@ -235,11 +238,23 @@ def main() -> int:
         _run_probe()
         return 0
 
+    # Apply persisted activation policy before any UI surfaces. Default is
+    # Accessory (menu-bar daemon) per the launcher-ux spec.
+    prefs = load_preferences()
+    apply_activation_policy(show_in_dock=prefs.show_in_dock)
+
     supervisor = Supervisor(target=bsky_saves_main, args=(HELPER_ARGV,))
-    status_window = StatusWindow(supervisor)
+
+    popover_holder: dict[str, StatusPopover | None] = {"popover": None}
+
+    def _open_status() -> None:
+        if popover_holder["popover"] is None:
+            popover_holder["popover"] = StatusPopover(supervisor, tray.icon_handle())
+            popover_holder["popover"].notify_helper_started()
+        popover_holder["popover"].show()
 
     supervisor.start()
-    tray = TrayApp(supervisor, on_open_status=status_window.open)
+    tray = TrayApp(supervisor, on_open_status=_open_status)
     tray.run()
     return 0
 

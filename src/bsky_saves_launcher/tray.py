@@ -195,6 +195,10 @@ class TrayApp:
             # the wrong size.
             pass
 
+    def icon_handle(self):
+        """Return the underlying pystray.Icon (only valid after run() starts)."""
+        return self._icon
+
     def refresh_icon(self) -> None:
         """Re-render the icon image based on supervisor state."""
         if self._icon is not None:
