@@ -4,12 +4,14 @@ macOS menu-bar icons are conventionally template images: a single-color
 silhouette that macOS tints automatically based on the menu-bar appearance
 (light, dark, tinted). This script:
 
-1. Renders src/bsky_saves_launcher/resources/icon-source.svg at 88px
-   via cairosvg.
-2. Thresholds the rendered RGBA's alpha channel into a 1-bit silhouette
-   mask.
-3. Composites a solid-black silhouette onto a transparent 88x88 canvas.
-4. Writes src/bsky_saves_launcher/resources/menubar.png.
+1. Loads src/bsky_saves_launcher/resources/icon-source.svg.
+2. Strips top-level <rect> elements (these are background fills — in
+   icon.svg, a full-canvas rounded square). Without this, the silhouette
+   would be a filled rectangle instead of the glyph shape.
+3. Renders the stripped SVG at 88px via cairosvg.
+4. Thresholds the rendered alpha channel into a 1-bit silhouette mask.
+5. Composites a solid-black silhouette onto a transparent 88x88 canvas.
+6. Writes src/bsky_saves_launcher/resources/menubar.png.
 
 88px = 22pt @ 4x, which covers all current macOS menu-bar scales with
 headroom. pystray reads the PNG and scales down as needed.
@@ -20,6 +22,7 @@ Run: python scripts/build_menubar_icon.py
 from __future__ import annotations
 
 import io
+import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import cairosvg
@@ -31,6 +34,17 @@ DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.png"
 
 SIZE = 88
 ALPHA_THRESHOLD = 128
+SVG_NS = "http://www.w3.org/2000/svg"
+
+
+def _strip_background_rects(svg_bytes: bytes) -> bytes:
+    """Remove top-level <rect> elements from an SVG (background fills)."""
+    ET.register_namespace("", SVG_NS)
+    root = ET.fromstring(svg_bytes)
+    rect_tag = f"{{{SVG_NS}}}rect"
+    for rect in list(root.findall(rect_tag)):
+        root.remove(rect)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=False)
 
 
 def main() -> int:
@@ -38,8 +52,9 @@ def main() -> int:
         print(f"ERROR: {SRC} not found. See plan Task 1.")
         return 1
 
+    svg_bytes = _strip_background_rects(SRC.read_bytes())
     png_bytes = cairosvg.svg2png(
-        bytestring=SRC.read_bytes(),
+        bytestring=svg_bytes,
         output_width=SIZE,
         output_height=SIZE,
     )
