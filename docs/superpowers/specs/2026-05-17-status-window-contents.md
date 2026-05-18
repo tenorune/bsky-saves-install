@@ -44,9 +44,9 @@ The "is it working / get the token" surface, optimized for glance.
 
 The user sees the composite, not the two underlying signals. The discrimination matters only because the failure-mode wording differs per case (e.g. "port conflict" suggests a different remedy than "unresponsive").
 
-**D2. Pairing token, truncated + copy.** Show the pairing token (currently stored at `~/Library/Application Support/bsky-saves/token`) so the user has an easy way to grab it for hosted-PWA pairing without rummaging in the filesystem. Render as a short identifier (first 8 hex chars or similar — a recognizable prefix, not the whole secret) with a small "copy" icon next to it that copies the **full** token to the clipboard. The truncated display protects against shoulder-surfing in screenshots while keeping the copy affordance.
+**D2. Pairing token, copy-only.** Show a labeled "Copy token" button. The token itself is never displayed in the UI — no truncation, no reveal, no asterisk-mask. The clipboard is the only surface the token's value touches. Behind the button: read the token from `~/Library/Application Support/bsky-saves/token` and write it to the system clipboard. Show a brief "Copied" confirmation (e.g. button label flips to "Copied ✓" for ~1.5 s, then reverts) so the user knows the action took.
 
-**Why D2 matters:** discovered during the v0.1.0 smoke when a user pairing to `saves.lightseed.net` had to navigate `~/Library/Application Support/bsky-saves/` in Finder to find the token file. That's friction we can erase cheaply.
+**Why D2 matters:** discovered during the v0.1.0 smoke when a user pairing to `saves.lightseed.net` had to navigate `~/Library/Application Support/bsky-saves/` in Finder to find the token file. That's friction we can erase cheaply, and we can do it without ever rendering the token visually.
 
 ### Secondary "More" panel
 
@@ -88,7 +88,7 @@ No new helper endpoints required for this v1.
 
 - ~~**Window vs panel?**~~ **Resolved: popover anchored to the tray icon (NSPopover + NSStatusItem button as anchor).** Native, discoverable, dismisses cleanly on click-outside when the user moves on. Live updates work in any container — popover doesn't preclude them; the widget state lives in the model layer regardless of view visibility.
 - ~~**Auto-refresh cadence?**~~ **Resolved: event-driven for launcher-internal facts; short-poll fallback for helper facts.** Launcher-internal state changes (supervisor exit, `/ping` becomes-available, log-line arrival, preference toggles) push to subscribed views via callbacks — zero lag, low cost since it's all in-process. Helper-internal facts (anything beyond what's in `/ping` cache) are pulled by short-polling the helper's API while the popover is open, until/unless the helper grows an SSE or WebSocket subscription endpoint we can attach to. The CLI team's `helper-control-endpoints` follow-up is the natural place to spec that subscription channel.
-- **Token display privacy.** R1 calls for truncation. Confirm with the helper team that revealing the first N hex chars doesn't materially weaken the token (which is 32 random hex chars per `bsky-saves token`'s implementation — leaking 8 leaves 24 chars / 96 bits of entropy, still safe).
+- ~~**Token display privacy.**~~ **Resolved: token is never displayed.** D2 is a copy-only button that puts the token directly on the system clipboard without rendering any characters in the UI. Sidesteps the truncation-vs-mask design space entirely and avoids any need to coordinate threat-model thresholds with the helper team.
 
 ## Cross-references
 
