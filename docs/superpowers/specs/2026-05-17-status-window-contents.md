@@ -34,7 +34,7 @@ Mirror of the tray "Quit" menu item, useful when the status window is focused an
 
 ## Open questions for the full spec
 
-- **Window vs panel?** A non-modal panel-style window that stays on top might suit a glanceable status surface better than a regular window. Decide once we're in PyObjC and can pick the right NSWindow style mask.
+- ~~**Window vs panel?**~~ **Resolved: popover anchored to the tray icon (NSPopover + NSStatusItem button as anchor).** Native, discoverable, dismisses cleanly on click-outside when the user moves on. Live updates work in any container — popover doesn't preclude them; the widget state lives in the model layer regardless of view visibility.
 - **Auto-refresh cadence?** The helper version is static for a given install; the running/stopped state and log tail change. Poll on a timer (every ~2 s) only while the window is visible.
 - **Token display privacy.** R1 calls for truncation. Confirm with the helper team that revealing the first N hex chars doesn't materially weaken the token (which is 32 random hex chars per `bsky-saves token`'s implementation — leaking 8 leaves 24 chars / 96 bits of entropy, still safe).
 
