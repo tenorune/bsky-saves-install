@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 
 _PLACEHOLDER_TEXT = (
-    "Bsky Saves launcher\n\n"
+    "BSky Saves launcher\n\n"
     "Status-window contents are deferred to a follow-up spec. "
     "Helper is running locally on port 47826."
 )
@@ -47,7 +47,7 @@ class StatusWindow:
         if sys.platform == "darwin":
             script = (
                 f'display dialog "{_PLACEHOLDER_TEXT}" '
-                'with title "Bsky Saves — status" '
+                'with title "BSky Saves — status" '
                 'buttons {"OK"} default button "OK" '
                 'with icon note'
             )

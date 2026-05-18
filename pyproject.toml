@@ -43,7 +43,7 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.briefcase]
-project_name = "Bsky Saves"
+project_name = "BSky Saves"
 bundle = "net.lightseed"
 version = "0.2.1"
 url = "https://github.com/tenorune/bsky-saves-install"
@@ -52,7 +52,7 @@ author = "tenorune"
 author_email = "noreply@lightseed.net"
 
 [tool.briefcase.app.bsky-saves-launcher]
-formal_name = "Bsky Saves"
+formal_name = "BSky Saves"
 description = "Local helper for bsky-saves bookmarks."
 long_description = "Menu-bar launcher that supervises bsky-saves serve and exposes a local helper at http://127.0.0.1:47826/."
 sources = ["src/bsky_saves_launcher"]
@@ -74,7 +74,7 @@ requires = [
 [tool.briefcase.app.bsky-saves-launcher.macOS]
 universal_build = true
 # std-nslog routes Python stdout/stderr to macOS unified logging so they're
-# visible via `log show --predicate 'process == "Bsky Saves"'` — without it,
+# visible via `log show --predicate 'process == "BSky Saves"'` — without it,
 # Briefcase warns at every launch and helper-side prints are lost. Required
 # for diagnosing helper-side issues (e.g. the 403-body output in fetch.py).
 requires = [

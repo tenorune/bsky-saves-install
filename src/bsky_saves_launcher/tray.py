@@ -137,7 +137,7 @@ class TrayApp:
         self._icon = pystray.Icon(
             name="bsky-saves",
             icon=_make_icon_image(running=self._supervisor.is_alive()),
-            title="Bsky Saves",
+            title="BSky Saves",
             menu=menu,
         )
         # `setup` runs after pystray's NSStatusItem is created (the constructor

@@ -12,10 +12,10 @@ for the full design.
 ## Running the unsigned v0.1 build on macOS
 
 Because the `.app` is unsigned, macOS Gatekeeper blocks first launch
-with "Bsky Saves can't be opened because Apple cannot check it for
+with "BSky Saves can't be opened because Apple cannot check it for
 malicious software." Bypass once per install:
 
-1. Right-click (or Control-click) `Bsky Saves.app` in `Applications`.
+1. Right-click (or Control-click) `BSky Saves.app` in `Applications`.
 2. Choose **Open** from the context menu.
 3. In the dialog, click **Open** again.
 
