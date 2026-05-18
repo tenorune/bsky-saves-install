@@ -71,7 +71,17 @@ def _install_tls_workaround() -> None:
     ssl.create_default_context = patched
 
 
-_install_tls_workaround()
+# Defense-in-depth as of v0.1.3: kept always-on even though bsky-saves >= 0.6.6
+# ships its own bsky_ssl_context() with a similar cipher reorder + certifi
+# loaded. The helper-side context is passed as verify=ctx to httpx at each
+# call site, which overrides our default-context patch at those sites — so
+# the two layers don't fight. If bsky-saves ever adds a code path that
+# constructs httpx without verify=bsky_ssl_context(), our launcher patch
+# still gives it a WAF-friendly cipher list by default. Disable via
+# BSKY_SAVES_TLS_DISABLE=1. See docs/v0.1-lessons.md and
+# tenorune/bsky-saves#19 for the full history.
+if not os.environ.get("BSKY_SAVES_TLS_DISABLE"):
+    _install_tls_workaround()
 
 from bsky_saves.cli import main as bsky_saves_main  # noqa: E402
 
@@ -128,6 +138,29 @@ def _run_probe() -> None:
     except Exception as exc:
         info["ja3_error"] = repr(exc)
 
+    # Compare against bsky-saves' own SSLContext, if v0.6.5+ bundles it. This
+    # tells us whether the helper-side TLS workaround produces a different JA3
+    # at all — and if so, whether it matches the JA3 the installer-side
+    # workaround uses. Diagnostic for tenorune/bsky-saves#19.
+    try:
+        import httpx
+        from bsky_saves._net import bsky_ssl_context  # type: ignore[import-not-found]
+
+        ctx = bsky_ssl_context()
+        info["bsky_ctx_ciphers"] = [c["name"] for c in ctx.get_ciphers()][:10]
+        resp = httpx.get(
+            "https://tls.peet.ws/api/all",
+            verify=ctx,
+            timeout=10.0,
+        )
+        tls = resp.json().get("tls", {})
+        info["bsky_ctx_ja3_hash"] = tls.get("ja3_hash")
+        info["bsky_ctx_ja4"] = tls.get("ja4")
+    except ImportError as exc:
+        info["bsky_ctx_unavailable"] = repr(exc)
+    except Exception as exc:
+        info["bsky_ctx_error"] = repr(exc)
+
     info["env_http_proxy"] = os.environ.get("HTTP_PROXY") or os.environ.get("http_proxy")
     info["env_https_proxy"] = os.environ.get("HTTPS_PROXY") or os.environ.get("https_proxy")
     info["env_no_proxy"] = os.environ.get("NO_PROXY") or os.environ.get("no_proxy")
@@ -163,6 +196,30 @@ def _run_probe() -> None:
             }
         except Exception as exc:
             info["bookmark_error"] = repr(exc)
+
+        # Same bookmark fetch, but through bsky-saves' own SSLContext if it
+        # exists. Tells us whether the helper-side cipher fix actually
+        # produces a WAF-accepted JA3 when applied directly to a bookmark
+        # call. For tenorune/bsky-saves#19.
+        try:
+            import httpx
+            from bsky_saves._net import bsky_ssl_context  # type: ignore[import-not-found]
+
+            ctx = bsky_ssl_context()
+            r = httpx.get(
+                "https://bsky.social/xrpc/app.bsky.bookmark.getBookmarks",
+                params={"limit": 1},
+                headers={"Authorization": f"Bearer {jwt}"},
+                verify=ctx,
+                timeout=30.0,
+            )
+            info["bookmark_with_bsky_ctx_status"] = r.status_code
+            info["bookmark_with_bsky_ctx_headers"] = dict(r.headers)
+            info["bookmark_with_bsky_ctx_body"] = r.text[:600]
+        except ImportError:
+            pass
+        except Exception as exc:
+            info["bookmark_with_bsky_ctx_error"] = repr(exc)
     else:
         info["bookmark_probe"] = (
             "skipped — set BSKY_SAVES_PROBE_JWT to a fresh accessJwt to exercise"
