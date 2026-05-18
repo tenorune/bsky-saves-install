@@ -315,6 +315,30 @@ def _build_callback_target_class():
 _PyCallbackTarget = None  # lazy class, built on first popover construction
 
 
+def _build_popover_delegate_class():
+    """NSPopoverDelegate that notifies the StatusPopover owner on close.
+
+    Built lazily so the AppKit import only happens on macOS.
+    """
+    import objc  # type: ignore[import-not-found]
+    from Foundation import NSObject  # type: ignore[import-not-found]
+
+    class _PopoverDelegate(NSObject):
+        def initWithOwner_(self, owner):
+            self = objc.super(_PopoverDelegate, self).init()
+            if self is None:
+                return None
+            self._owner_ref = owner
+            return self
+
+        def popoverDidClose_(self, _notification):
+            owner = getattr(self, "_owner_ref", None)
+            if owner is not None:
+                owner._on_popover_did_close()
+
+    return _PopoverDelegate
+
+
 def _ensure_callback_target_class() -> None:
     global _PyCallbackTarget
     if _PyCallbackTarget is None and sys.platform == "darwin":
@@ -341,6 +365,8 @@ class StatusPopover:
         self._more_view = None
         self._start_at_login_switch = None
         self._version_label = None
+        self._tray_button = None
+        self._popover_delegate = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -391,6 +417,26 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
+            # Keep the menu-bar button visually pressed while the popover is
+            # open, the same way AppleScript / system menu-bar items do.
+            # NSStatusBarButton honors highlight_(True).
+            try:
+                button.highlight_(True)
+            except Exception:
+                pass
+            self._tray_button = button
+            # Lock the popover's *chrome* (the arrow / frame) to the active
+            # visual-effect appearance too. The content VEV (wrapped in
+            # _construct) handles the panel body, but the system-drawn arrow
+            # is owned by the popover's private window frame view; walk the
+            # NSPopover window's view tree and pin any NSVisualEffectView we
+            # find to state=Active. Best-effort — Apple may rename the
+            # private classes; on failure the arrow keeps shifting but the
+            # body stays stable.
+            try:
+                self._pin_popover_frame_active()
+            except Exception as exc:
+                print(f"[popover] frame-pin failed: {exc!r}", file=sys.stderr)
             self._start_refresh_timer(ak)
         except Exception as exc:
             import traceback
@@ -448,6 +494,10 @@ class StatusPopover:
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
         popover.setContentSize_((260, 120))  # initial size; show() updates on each open
         popover.setContentViewController_(controller)
+        # Delegate handles popoverDidClose_ → un-highlight tray button + stop
+        # refresh timer. Retain it on self; NSPopover doesn't retain delegate.
+        self._popover_delegate = _build_popover_delegate_class().alloc().initWithOwner_(self)
+        popover.setDelegate_(self._popover_delegate)
         self._popover = popover
 
     def _start_refresh_timer(self, ak) -> None:
@@ -556,3 +606,65 @@ class StatusPopover:
         if self._timer is not None:
             self._timer.invalidate()
             self._timer = None
+
+    def _on_popover_did_close(self) -> None:
+        """NSPopoverDelegate hook — fires after the popover finishes closing."""
+        self._stop_refresh_timer()
+        if self._tray_button is not None:
+            try:
+                self._tray_button.highlight_(False)
+            except Exception:
+                pass
+
+    def _pin_popover_frame_active(self) -> None:
+        """Force the popover window's NSVisualEffectView(s) to state=Active.
+
+        NSPopover's arrow + frame are drawn by a private NSVisualEffectView
+        inside the popover's window. By default that view's state tracks the
+        window's key/active state, so clicking inside the popover (which
+        moves focus) causes the arrow to flicker between active/inactive
+        appearances. Walk the popover's window view tree and pin every
+        NSVisualEffectView we find to state=Active.
+
+        Uses class-name string matching (no private symbol imports), so
+        this is safe-by-default: if Apple renames the private classes,
+        we no-op rather than crash.
+        """
+        from AppKit import (  # type: ignore[import-not-found]
+            NSVisualEffectStateActive,
+            NSVisualEffectView,
+        )
+
+        controller = self._content_controller
+        if controller is None:
+            return
+        view = controller.view()
+        if view is None:
+            return
+        window = view.window()
+        if window is None:
+            return
+
+        def walk(v):
+            if v is None:
+                return
+            if isinstance(v, NSVisualEffectView):
+                try:
+                    v.setState_(NSVisualEffectStateActive)
+                except Exception:
+                    pass
+            try:
+                subs = v.subviews()
+            except Exception:
+                return
+            for sub in subs:
+                walk(sub)
+
+        content = window.contentView()
+        if content is None:
+            return
+        # Start one level above the content view to catch the popover's
+        # frame view (which is a sibling/parent of contentView in NSPopover's
+        # window hierarchy).
+        root = content.superview() or content
+        walk(root)
