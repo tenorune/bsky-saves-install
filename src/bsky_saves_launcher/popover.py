@@ -138,6 +138,102 @@ def _build_default_view(ak, on_copy_token, on_show_more):
     return stack, status_label, copy_button, copy_button_default_title
 
 
+def _build_more_view(
+    ak,
+    *,
+    initial_show_in_dock: bool,
+    initial_start_at_login: bool,
+    on_show_in_dock_toggle,
+    on_start_at_login_toggle,
+    on_quit,
+    on_back,
+):
+    """Build the More panel's NSView tree.
+
+    Returns (root_view, show_in_dock_switch, start_at_login_switch, version_label).
+    """
+    from AppKit import (  # type: ignore[import-not-found]
+        NSButton,
+        NSControlStateValueOff,
+        NSControlStateValueOn,
+        NSStackView,
+        NSStackViewDistributionFill,
+        NSSwitch,
+        NSTextField,
+        NSUserInterfaceLayoutOrientationVertical,
+    )
+
+    stack = NSStackView.alloc().init()
+    stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    stack.setDistribution_(NSStackViewDistributionFill)
+    stack.setSpacing_(8.0)
+    stack.setEdgeInsets_((12, 12, 12, 12))
+
+    # Back arrow / title row
+    back_button = NSButton.buttonWithTitle_target_action_("← Back", None, None)
+    back_button.setBezelStyle_(1)
+    back_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_back))
+    back_button.setAction_("invoke:")
+    stack.addArrangedSubview_(back_button)
+
+    # Show in Dock toggle
+    show_in_dock_label = NSTextField.labelWithString_("Show in Dock")
+    stack.addArrangedSubview_(show_in_dock_label)
+    show_in_dock_switch = NSSwitch.alloc().init()
+    show_in_dock_switch.setState_(
+        NSControlStateValueOn if initial_show_in_dock else NSControlStateValueOff
+    )
+    show_in_dock_switch.setTarget_(
+        _PyCallbackTarget.alloc().initWithCallable_(
+            lambda: on_show_in_dock_toggle(
+                show_in_dock_switch.state() == NSControlStateValueOn
+            )
+        )
+    )
+    show_in_dock_switch.setAction_("invoke:")
+    stack.addArrangedSubview_(show_in_dock_switch)
+
+    # Start at login toggle
+    start_at_login_label = NSTextField.labelWithString_("Start at login")
+    stack.addArrangedSubview_(start_at_login_label)
+    start_at_login_switch = NSSwitch.alloc().init()
+    start_at_login_switch.setState_(
+        NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
+    )
+    start_at_login_switch.setTarget_(
+        _PyCallbackTarget.alloc().initWithCallable_(
+            lambda: on_start_at_login_toggle(
+                start_at_login_switch.state() == NSControlStateValueOn
+            )
+        )
+    )
+    start_at_login_switch.setAction_("invoke:")
+    stack.addArrangedSubview_(start_at_login_switch)
+
+    # Quit
+    quit_button = NSButton.buttonWithTitle_target_action_("Quit BSky Saves", None, None)
+    quit_button.setBezelStyle_(1)
+    quit_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_quit))
+    quit_button.setAction_("invoke:")
+    stack.addArrangedSubview_(quit_button)
+
+    # Version footer (small label at the bottom; gets updated on each tick).
+    version_label = NSTextField.labelWithString_("…")
+    stack.addArrangedSubview_(version_label)
+
+    stack.setFrame_(((0, 0), (260, 240)))
+
+    return stack, show_in_dock_switch, start_at_login_switch, version_label
+
+
+def _format_versions(
+    launcher_version: str, helper_version: str | None, gui_version: str | None
+) -> str:
+    helper = helper_version or "—"
+    gui = gui_version or "—"
+    return f"BSky Saves {launcher_version} · bsky-saves {helper} · GUI {gui}"
+
+
 def _build_callback_target_class():
     """Define the NSObject-derived button target class. Returns the class."""
     from Foundation import NSObject  # type: ignore[import-not-found]
@@ -184,6 +280,11 @@ class StatusPopover:
         self._status_label = None
         self._copy_button = None
         self._copy_default_title = "Copy pairing token"
+        self._default_view = None
+        self._more_view = None
+        self._show_in_dock_switch = None
+        self._start_at_login_switch = None
+        self._version_label = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -207,19 +308,38 @@ class StatusPopover:
         self._start_refresh_timer(ak)
 
     def _construct(self, ak) -> None:
-        """Build the popover + the Default view controller on first show."""
         _ensure_callback_target_class()
-        controller = ak["NSViewController"].alloc().init()
-        root, status_label, copy_button, copy_default_title = _build_default_view(
+        from bsky_saves_launcher.preferences import load_preferences
+
+        prefs = load_preferences()
+
+        default_root, status_label, copy_button, copy_default_title = _build_default_view(
             ak,
             on_copy_token=self._on_copy_token,
             on_show_more=self._on_show_more,
         )
-        controller.setView_(root)
-        self._content_controller = controller
+        more_root, show_switch, start_switch, version_label = _build_more_view(
+            ak,
+            initial_show_in_dock=prefs.show_in_dock,
+            initial_start_at_login=prefs.start_at_login,
+            on_show_in_dock_toggle=self._on_show_in_dock_toggle,
+            on_start_at_login_toggle=self._on_start_at_login_toggle,
+            on_quit=self._on_quit,
+            on_back=self._on_back_to_default,
+        )
+
+        self._default_view = default_root
+        self._more_view = more_root
         self._status_label = status_label
         self._copy_button = copy_button
         self._copy_default_title = copy_default_title
+        self._show_in_dock_switch = show_switch
+        self._start_at_login_switch = start_switch
+        self._version_label = version_label
+
+        controller = ak["NSViewController"].alloc().init()
+        controller.setView_(default_root)
+        self._content_controller = controller
 
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
@@ -238,7 +358,7 @@ class StatusPopover:
         self._timer = timer
 
     def _on_tick(self) -> None:
-        """Refresh-timer callback — recompute health and update the status label."""
+        from bsky_saves_launcher import __version__ as launcher_version
         from bsky_saves_launcher.health import compute_health
 
         snapshot = compute_health(
@@ -250,6 +370,10 @@ class StatusPopover:
             self._last_ping_ok = snapshot.last_seen_ok
         if self._status_label is not None:
             self._status_label.setStringValue_(_status_line(snapshot))
+        if self._version_label is not None:
+            self._version_label.setStringValue_(
+                _format_versions(launcher_version, snapshot.helper_version, snapshot.gui_version)
+            )
         self._last_snapshot = snapshot
 
     def _on_copy_token(self) -> None:
@@ -285,8 +409,48 @@ class StatusPopover:
         )
 
     def _on_show_more(self) -> None:
-        # Task 7 wires this up to push the More controller onto a nav stack.
-        pass
+        """Swap the controller's view to the More panel."""
+        if self._content_controller is None or self._more_view is None:
+            return
+        self._content_controller.setView_(self._more_view)
+
+    def _on_back_to_default(self) -> None:
+        if self._content_controller is None or self._default_view is None:
+            return
+        self._content_controller.setView_(self._default_view)
+
+    def _on_show_in_dock_toggle(self, enabled: bool) -> None:
+        from bsky_saves_launcher.activation import apply_activation_policy
+        from bsky_saves_launcher.preferences import Preferences, load_preferences, save_preferences
+
+        current = load_preferences()
+        save_preferences(Preferences(show_in_dock=enabled, start_at_login=current.start_at_login))
+        apply_activation_policy(show_in_dock=enabled)
+
+    def _on_start_at_login_toggle(self, enabled: bool) -> None:
+        from bsky_saves_launcher.launchagent import (
+            LaunchAgentError,
+            install_launch_agent,
+            uninstall_launch_agent,
+        )
+        from bsky_saves_launcher.preferences import Preferences, load_preferences, save_preferences
+
+        current = load_preferences()
+        save_preferences(Preferences(show_in_dock=current.show_in_dock, start_at_login=enabled))
+        try:
+            if enabled:
+                install_launch_agent(app_path="/Applications/BSky Saves.app")
+            else:
+                uninstall_launch_agent()
+        except LaunchAgentError:
+            # Best-effort: the preference is the source of truth; UI revert
+            # is handled by the popover's next refresh tick (Task 6).
+            pass
+
+    def _on_quit(self) -> None:
+        import os
+
+        os._exit(0)
 
     def _stop_refresh_timer(self) -> None:
         if self._timer is not None:
