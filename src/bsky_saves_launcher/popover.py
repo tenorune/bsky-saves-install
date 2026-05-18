@@ -90,10 +90,15 @@ def _status_line(snapshot) -> str:
     return str(state.value)
 
 
-def _build_default_view(ak, on_copy_token, on_show_more):
+def _build_default_view(ak, on_copy_token, on_show_more, targets_out: list):
     """Build the Default view's NSView tree and return the root + handles.
 
     Returns (root_view, status_label, copy_button, copy_button_default_title).
+
+    targets_out: caller-owned list. Every _PyCallbackTarget instance we create
+    is appended here so the caller retains a strong reference. Without this,
+    Python releases the target the moment setTarget_ returns and the button's
+    action becomes a no-op (NSButton doesn't retain its target).
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
@@ -119,7 +124,9 @@ def _build_default_view(ak, on_copy_token, on_show_more):
     )
     copy_button_default_title = "Copy pairing token"
     copy_button.setBezelStyle_(1)  # NSBezelStyleRounded
-    copy_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_copy_token))
+    copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
+    targets_out.append(copy_target)
+    copy_button.setTarget_(copy_target)
     copy_button.setAction_("invoke:")
     stack.addArrangedSubview_(copy_button)
 
@@ -129,7 +136,9 @@ def _build_default_view(ak, on_copy_token, on_show_more):
         None,
     )
     more_button.setBezelStyle_(1)
-    more_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_show_more))
+    more_target = _PyCallbackTarget.alloc().initWithCallable_(on_show_more)
+    targets_out.append(more_target)
+    more_button.setTarget_(more_target)
     more_button.setAction_("invoke:")
     stack.addArrangedSubview_(more_button)
 
@@ -147,10 +156,12 @@ def _build_more_view(
     on_start_at_login_toggle,
     on_quit,
     on_back,
+    targets_out: list,
 ):
     """Build the More panel's NSView tree.
 
     Returns (root_view, show_in_dock_switch, start_at_login_switch, version_label).
+    targets_out: see _build_default_view docstring.
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
@@ -172,7 +183,9 @@ def _build_more_view(
     # Back arrow / title row
     back_button = NSButton.buttonWithTitle_target_action_("← Back", None, None)
     back_button.setBezelStyle_(1)
-    back_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_back))
+    back_target = _PyCallbackTarget.alloc().initWithCallable_(on_back)
+    targets_out.append(back_target)
+    back_button.setTarget_(back_target)
     back_button.setAction_("invoke:")
     stack.addArrangedSubview_(back_button)
 
@@ -183,13 +196,13 @@ def _build_more_view(
     show_in_dock_switch.setState_(
         NSControlStateValueOn if initial_show_in_dock else NSControlStateValueOff
     )
-    show_in_dock_switch.setTarget_(
-        _PyCallbackTarget.alloc().initWithCallable_(
-            lambda: on_show_in_dock_toggle(
-                show_in_dock_switch.state() == NSControlStateValueOn
-            )
+    show_in_dock_target = _PyCallbackTarget.alloc().initWithCallable_(
+        lambda: on_show_in_dock_toggle(
+            show_in_dock_switch.state() == NSControlStateValueOn
         )
     )
+    targets_out.append(show_in_dock_target)
+    show_in_dock_switch.setTarget_(show_in_dock_target)
     show_in_dock_switch.setAction_("invoke:")
     stack.addArrangedSubview_(show_in_dock_switch)
 
@@ -200,20 +213,22 @@ def _build_more_view(
     start_at_login_switch.setState_(
         NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
     )
-    start_at_login_switch.setTarget_(
-        _PyCallbackTarget.alloc().initWithCallable_(
-            lambda: on_start_at_login_toggle(
-                start_at_login_switch.state() == NSControlStateValueOn
-            )
+    start_at_login_target = _PyCallbackTarget.alloc().initWithCallable_(
+        lambda: on_start_at_login_toggle(
+            start_at_login_switch.state() == NSControlStateValueOn
         )
     )
+    targets_out.append(start_at_login_target)
+    start_at_login_switch.setTarget_(start_at_login_target)
     start_at_login_switch.setAction_("invoke:")
     stack.addArrangedSubview_(start_at_login_switch)
 
     # Quit
     quit_button = NSButton.buttonWithTitle_target_action_("Quit BSky Saves", None, None)
     quit_button.setBezelStyle_(1)
-    quit_button.setTarget_(_PyCallbackTarget.alloc().initWithCallable_(on_quit))
+    quit_target = _PyCallbackTarget.alloc().initWithCallable_(on_quit)
+    targets_out.append(quit_target)
+    quit_button.setTarget_(quit_target)
     quit_button.setAction_("invoke:")
     stack.addArrangedSubview_(quit_button)
 
@@ -351,10 +366,15 @@ class StatusPopover:
 
         prefs = load_preferences()
 
+        # NSButton.setTarget_ doesn't retain its target — keep strong refs
+        # here so the action selectors stay live across button clicks.
+        self._button_targets = []
+
         default_root, status_label, copy_button, copy_default_title = _build_default_view(
             ak,
             on_copy_token=self._on_copy_token,
             on_show_more=self._on_show_more,
+            targets_out=self._button_targets,
         )
         more_root, show_switch, start_switch, version_label = _build_more_view(
             ak,
@@ -364,6 +384,7 @@ class StatusPopover:
             on_start_at_login_toggle=self._on_start_at_login_toggle,
             on_quit=self._on_quit,
             on_back=self._on_back_to_default,
+            targets_out=self._button_targets,
         )
 
         self._default_view = default_root
