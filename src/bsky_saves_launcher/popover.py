@@ -236,11 +236,16 @@ def _format_versions(
 
 def _build_callback_target_class():
     """Define the NSObject-derived button target class. Returns the class."""
+    import objc  # type: ignore[import-not-found]
     from Foundation import NSObject  # type: ignore[import-not-found]
 
     class _PyCallbackTarget(NSObject):
         def initWithCallable_(self, callable_):
-            self = NSObject.init(self)
+            # PyObjC requires super().init() (or objc.super(...).init()) here —
+            # `NSObject.init(self)` passes self as an extra positional arg
+            # which raises 'Need 0 arguments, got 1' because Cocoa's -init
+            # takes no parameters; the receiver is implicit.
+            self = objc.super(_PyCallbackTarget, self).init()
             if self is None:
                 return None
             self._callable = callable_
@@ -250,7 +255,11 @@ def _build_callback_target_class():
             try:
                 self._callable()
             except Exception:
-                pass
+                import sys
+                import traceback
+
+                print(f"[popover] callback failed: {self._callable!r}", file=sys.stderr)
+                traceback.print_exc(file=sys.stderr)
 
     return _PyCallbackTarget
 
