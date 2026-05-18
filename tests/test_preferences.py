@@ -18,7 +18,6 @@ def test_load_returns_defaults_when_file_missing(
         lambda: tmp_path / "does-not-exist.json",
     )
     prefs = load_preferences()
-    assert prefs.show_in_dock is False
     assert prefs.start_at_login is False
 
 
@@ -31,9 +30,8 @@ def test_save_then_load_roundtrip(
         "bsky_saves_launcher.preferences._preferences_path",
         lambda: pref_file,
     )
-    save_preferences(Preferences(show_in_dock=True, start_at_login=True))
+    save_preferences(Preferences(start_at_login=True))
     loaded = load_preferences()
-    assert loaded.show_in_dock is True
     assert loaded.start_at_login is True
 
 
@@ -46,7 +44,7 @@ def test_save_creates_parent_directories(
         "bsky_saves_launcher.preferences._preferences_path",
         lambda: nested,
     )
-    save_preferences(Preferences(show_in_dock=True, start_at_login=False))
+    save_preferences(Preferences(start_at_login=False))
     assert nested.exists()
 
 
@@ -61,7 +59,6 @@ def test_load_recovers_from_malformed_json(
         lambda: pref_file,
     )
     prefs = load_preferences()
-    assert prefs.show_in_dock is False
     assert prefs.start_at_login is False
 
 
@@ -70,17 +67,33 @@ def test_load_recovers_from_unexpected_key_types(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     pref_file = tmp_path / "preferences.json"
-    pref_file.write_text('{"show_in_dock": "not a bool", "start_at_login": 1}')
+    pref_file.write_text('{"start_at_login": 1}')
     monkeypatch.setattr(
         "bsky_saves_launcher.preferences._preferences_path",
         lambda: pref_file,
     )
     prefs = load_preferences()
-    assert prefs.show_in_dock is False
     assert prefs.start_at_login is False
 
 
+def test_legacy_show_in_dock_key_is_ignored(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A preferences file written by a pre-v0.3.x version of the launcher
+    may carry a 'show_in_dock' key; loading must not raise."""
+    pref_file = tmp_path / "preferences.json"
+    pref_file.write_text('{"show_in_dock": true, "start_at_login": true}')
+    monkeypatch.setattr(
+        "bsky_saves_launcher.preferences._preferences_path",
+        lambda: pref_file,
+    )
+    prefs = load_preferences()
+    assert prefs.start_at_login is True
+    assert not hasattr(prefs, "show_in_dock")
+
+
 def test_preferences_dataclass_is_immutable() -> None:
-    prefs = Preferences(show_in_dock=True, start_at_login=False)
+    prefs = Preferences(start_at_login=False)
     with pytest.raises((AttributeError, Exception)):
-        prefs.show_in_dock = False  # type: ignore[misc]
+        prefs.start_at_login = True  # type: ignore[misc]

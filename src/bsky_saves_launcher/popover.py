@@ -150,9 +150,7 @@ def _build_default_view(ak, on_copy_token, on_show_more, targets_out: list):
 def _build_more_view(
     ak,
     *,
-    initial_show_in_dock: bool,
     initial_start_at_login: bool,
-    on_show_in_dock_toggle,
     on_start_at_login_toggle,
     on_quit,
     on_back,
@@ -160,8 +158,13 @@ def _build_more_view(
 ):
     """Build the More panel's NSView tree.
 
-    Returns (root_view, show_in_dock_switch, start_at_login_switch, version_label).
+    Returns (root_view, start_at_login_switch, version_label).
     targets_out: see _build_default_view docstring.
+
+    Note: Show-in-Dock was removed in v0.3.x — macOS's recent-apps Dock
+    cache made the toggle unreliable (clicking the leftover Dock entry
+    revived the policy under the user). The launcher is now hardcoded
+    menu-bar-only via LSUIElement=true + setActivationPolicy_(Accessory).
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
@@ -188,23 +191,6 @@ def _build_more_view(
     back_button.setTarget_(back_target)
     back_button.setAction_("invoke:")
     stack.addArrangedSubview_(back_button)
-
-    # Show in Dock toggle
-    show_in_dock_label = NSTextField.labelWithString_("Show in Dock")
-    stack.addArrangedSubview_(show_in_dock_label)
-    show_in_dock_switch = NSSwitch.alloc().init()
-    show_in_dock_switch.setState_(
-        NSControlStateValueOn if initial_show_in_dock else NSControlStateValueOff
-    )
-    show_in_dock_target = _PyCallbackTarget.alloc().initWithCallable_(
-        lambda: on_show_in_dock_toggle(
-            show_in_dock_switch.state() == NSControlStateValueOn
-        )
-    )
-    targets_out.append(show_in_dock_target)
-    show_in_dock_switch.setTarget_(show_in_dock_target)
-    show_in_dock_switch.setAction_("invoke:")
-    stack.addArrangedSubview_(show_in_dock_switch)
 
     # Start at login toggle
     start_at_login_label = NSTextField.labelWithString_("Start at login")
@@ -236,9 +222,9 @@ def _build_more_view(
     version_label = NSTextField.labelWithString_("…")
     stack.addArrangedSubview_(version_label)
 
-    stack.setFrame_(((0, 0), (260, 240)))
+    stack.setFrame_(((0, 0), (260, 200)))
 
-    return stack, show_in_dock_switch, start_at_login_switch, version_label
+    return stack, start_at_login_switch, version_label
 
 
 def _format_versions(
@@ -306,7 +292,6 @@ class StatusPopover:
         self._copy_default_title = "Copy pairing token"
         self._default_view = None
         self._more_view = None
-        self._show_in_dock_switch = None
         self._start_at_login_switch = None
         self._version_label = None
 
@@ -376,11 +361,9 @@ class StatusPopover:
             on_show_more=self._on_show_more,
             targets_out=self._button_targets,
         )
-        more_root, show_switch, start_switch, version_label = _build_more_view(
+        more_root, start_switch, version_label = _build_more_view(
             ak,
-            initial_show_in_dock=prefs.show_in_dock,
             initial_start_at_login=prefs.start_at_login,
-            on_show_in_dock_toggle=self._on_show_in_dock_toggle,
             on_start_at_login_toggle=self._on_start_at_login_toggle,
             on_quit=self._on_quit,
             on_back=self._on_back_to_default,
@@ -392,7 +375,6 @@ class StatusPopover:
         self._status_label = status_label
         self._copy_button = copy_button
         self._copy_default_title = copy_default_title
-        self._show_in_dock_switch = show_switch
         self._start_at_login_switch = start_switch
         self._version_label = version_label
 
@@ -479,24 +461,15 @@ class StatusPopover:
             return
         self._content_controller.setView_(self._default_view)
 
-    def _on_show_in_dock_toggle(self, enabled: bool) -> None:
-        from bsky_saves_launcher.activation import apply_activation_policy
-        from bsky_saves_launcher.preferences import Preferences, load_preferences, save_preferences
-
-        current = load_preferences()
-        save_preferences(Preferences(show_in_dock=enabled, start_at_login=current.start_at_login))
-        apply_activation_policy(show_in_dock=enabled)
-
     def _on_start_at_login_toggle(self, enabled: bool) -> None:
         from bsky_saves_launcher.launchagent import (
             LaunchAgentError,
             install_launch_agent,
             uninstall_launch_agent,
         )
-        from bsky_saves_launcher.preferences import Preferences, load_preferences, save_preferences
+        from bsky_saves_launcher.preferences import Preferences, save_preferences
 
-        current = load_preferences()
-        save_preferences(Preferences(show_in_dock=current.show_in_dock, start_at_login=enabled))
+        save_preferences(Preferences(start_at_login=enabled))
         try:
             if enabled:
                 install_launch_agent(app_path="/Applications/BSky Saves.app")

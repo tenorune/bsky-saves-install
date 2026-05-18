@@ -1,9 +1,14 @@
 """Launcher preferences — JSON-backed at platform-conventional path.
 
-Two boolean preferences in v1: show_in_dock, start_at_login. Both default
-to False (menu-bar-only daemon; no autostart). Defensive parsing so a
-corrupted preferences file degrades to defaults rather than crashing the
-launcher on startup.
+One boolean preference in v0.3.x: start_at_login. Defaults to False
+(no autostart). Defensive parsing so a corrupted preferences file
+degrades to defaults rather than crashing the launcher on startup.
+
+A previous version included show_in_dock, but macOS's recent-apps
+Dock cache made the toggle unreliable (clicking the leftover Dock
+entry reverted the policy under the user's feet). The launcher is
+now hardcoded menu-bar-only via LSUIElement=true in Info.plist +
+runtime NSApp.setActivationPolicy_(Accessory).
 """
 
 from __future__ import annotations
@@ -17,7 +22,6 @@ from pathlib import Path
 class Preferences:
     """Immutable preferences snapshot."""
 
-    show_in_dock: bool = False
     start_at_login: bool = False
 
 
@@ -52,10 +56,8 @@ def load_preferences() -> Preferences:
     if not isinstance(data, dict):
         return Preferences()
 
-    show_in_dock = data.get("show_in_dock")
     start_at_login = data.get("start_at_login")
     return Preferences(
-        show_in_dock=show_in_dock if isinstance(show_in_dock, bool) else False,
         start_at_login=start_at_login if isinstance(start_at_login, bool) else False,
     )
 
@@ -66,10 +68,7 @@ def save_preferences(prefs: Preferences) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps(
-            {"show_in_dock": prefs.show_in_dock, "start_at_login": prefs.start_at_login},
-            indent=2,
-        ),
+        json.dumps({"start_at_login": prefs.start_at_login}, indent=2),
         encoding="utf-8",
     )
     tmp.replace(path)

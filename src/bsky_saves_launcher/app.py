@@ -7,7 +7,6 @@ import ssl
 import sys
 
 from bsky_saves_launcher.activation import apply_activation_policy
-from bsky_saves_launcher.preferences import load_preferences
 
 # TLS workaround for tenorune/bsky-saves#19 — AWS WAF rejects requests from the
 # bundled Python's OpenSSL 3.0.x default TLS handshake (JA3
@@ -240,10 +239,11 @@ def main() -> int:
         _run_probe()
         return 0
 
-    # Apply persisted activation policy before any UI surfaces. Default is
-    # Accessory (menu-bar daemon) per the launcher-ux spec.
-    prefs = load_preferences()
-    apply_activation_policy(show_in_dock=prefs.show_in_dock)
+    # Hardcoded menu-bar-only (Accessory) policy. LSUIElement=true in
+    # Info.plist handles this at app launch; the runtime call is belt-and-
+    # braces for the case where the bundle is launched in a way that
+    # bypasses Info.plist (e.g. running the stub binary directly).
+    apply_activation_policy(show_in_dock=False)
 
     supervisor = Supervisor(target=bsky_saves_main, args=(HELPER_ARGV,))
 
