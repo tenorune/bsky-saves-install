@@ -296,16 +296,42 @@ class StatusPopover:
         """Show the popover anchored to the tray icon. Lazy-construct on first call."""
         if sys.platform != "darwin":
             return
-        ak = _import_appkit()
-        if self._popover is None:
-            self._construct(ak)
-        button = self._tray_icon_ref._status_item.button()
-        self._popover.showRelativeToRect_ofView_preferredEdge_(
-            button.bounds(),
-            button,
-            ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
-        )
-        self._start_refresh_timer(ak)
+        try:
+            ak = _import_appkit()
+            if self._popover is None:
+                self._construct(ak)
+            status_item = getattr(self._tray_icon_ref, "_status_item", None)
+            if status_item is None:
+                print(
+                    "[popover] tray_icon._status_item is None — pystray hasn't initialized?",
+                    file=sys.stderr,
+                )
+                return
+            button = status_item.button()
+            if button is None:
+                print("[popover] status_item.button() is None", file=sys.stderr)
+                return
+            # Resize the popover to match whichever view is currently active.
+            if self._content_controller is not None:
+                view = self._content_controller.view()
+                if view is not None:
+                    frame = view.frame()
+                    # frame.size is an NSSize tuple-ish (width, height); PyObjC
+                    # exposes .width and .height attributes too.
+                    try:
+                        size = (frame.size.width, frame.size.height)
+                    except AttributeError:
+                        size = (frame[1][0], frame[1][1])
+                    if size[0] > 0 and size[1] > 0:
+                        self._popover.setContentSize_(size)
+            self._popover.showRelativeToRect_ofView_preferredEdge_(
+                button.bounds(),
+                button,
+                ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
+            )
+            self._start_refresh_timer(ak)
+        except Exception as exc:
+            print(f"[popover] show failed: {exc!r}", file=sys.stderr)
 
     def _construct(self, ak) -> None:
         _ensure_callback_target_class()
@@ -343,6 +369,7 @@ class StatusPopover:
 
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
+        popover.setContentSize_((260, 120))  # initial size; show() updates on each open
         popover.setContentViewController_(controller)
         self._popover = popover
 
