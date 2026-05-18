@@ -417,38 +417,51 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
-            # Make our app the active app while the popover is shown. Without
-            # this, the popover's window never becomes "active" (LSUIElement
-            # apps don't auto-activate on click), and macOS renders the
-            # popover's frame VEV in its inactive material — that's the
-            # color/opacity shift the user sees when focus moves inside the
-            # popover. activateIgnoringOtherApps_ + a fixed appearance on
-            # the popover holds the chrome stable.
+            # Keep the menu-bar button visually pressed while the popover is
+            # open. NSStatusBarButton resets its highlight at mouseUp on the
+            # same click that triggered our action, so any setHighlighted_
+            # we call synchronously gets undone the moment this function
+            # returns. Schedule on the next run-loop turn via NSTimer.
+            self._tray_button = button
+
+            def _apply_highlight(_t):
+                try:
+                    button.setHighlighted_(True)
+                    cell = button.cell()
+                    if cell is not None:
+                        cell.setHighlighted_(True)
+                    button.setNeedsDisplay_(True)
+                except Exception as exc:
+                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+
+            try:
+                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
+                    0.05, False, _apply_highlight
+                )
+            except Exception:
+                pass
+            # Lock the popover window's appearance to the current system
+            # appearance after show. Setting it on the popover alone wasn't
+            # enough — NSPopover's private window also has its own appearance
+            # property that needs pinning.
             try:
                 from AppKit import NSApp  # type: ignore[import-not-found]
 
-                NSApp.activateIgnoringOtherApps_(True)
-                try:
-                    self._popover.setAppearance_(NSApp.effectiveAppearance())
-                except Exception:
-                    pass
-            except Exception:
-                pass
-            # Keep the menu-bar button visually pressed while the popover is
-            # open. NSStatusBarButton's transient highlight_(True) is reset
-            # the moment the click event finishes — pin the persistent state
-            # via the cell + force redraw.
-            try:
-                cell = button.cell()
-                if cell is not None:
-                    cell.setHighlighted_(True)
-                button.setNeedsDisplay_(True)
-            except Exception:
-                pass
-            self._tray_button = button
+                effective = NSApp.effectiveAppearance()
+                self._popover.setAppearance_(effective)
+                controller = self._content_controller
+                if controller is not None:
+                    view = controller.view()
+                    if view is not None:
+                        window = view.window()
+                        if window is not None:
+                            window.setAppearance_(effective)
+            except Exception as exc:
+                print(f"[popover] appearance-pin failed: {exc!r}", file=sys.stderr)
             # Backup: walk the popover window's view tree and pin any
-            # NSVisualEffectView to state=Active. Belt-and-braces with the
-            # app-activate above.
+            # NSVisualEffectView to state=Active. Prints how many it found
+            # so we can tell from logs whether the chrome VEV is reachable
+            # via the standard view hierarchy.
             try:
                 self._pin_popover_frame_active()
             except Exception as exc:
@@ -664,9 +677,12 @@ class StatusPopover:
         if window is None:
             return
 
+        counts = {"vev": 0, "views": 0}
+
         def walk(v):
             if v is None:
                 return
+            counts["views"] += 1
             # isKindOfClass_ catches private NSVisualEffectView subclasses
             # that Python's isinstance can miss; respondsToSelector_ is the
             # duck-typed fallback if the class check is unexpectedly false.
@@ -677,6 +693,7 @@ class StatusPopover:
             except Exception:
                 matches = False
             if matches:
+                counts["vev"] += 1
                 try:
                     v.setState_(NSVisualEffectStateActive)
                 except Exception:
@@ -695,3 +712,8 @@ class StatusPopover:
             return
         root = content.superview() or content
         walk(root)
+        print(
+            f"[popover] frame-pin walked {counts['views']} views, "
+            f"pinned {counts['vev']} NSVisualEffectView(s)",
+            file=sys.stderr,
+        )
