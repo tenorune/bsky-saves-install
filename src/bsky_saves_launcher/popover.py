@@ -331,7 +331,10 @@ class StatusPopover:
             )
             self._start_refresh_timer(ak)
         except Exception as exc:
+            import traceback
+
             print(f"[popover] show failed: {exc!r}", file=sys.stderr)
+            traceback.print_exc(file=sys.stderr)
 
     def _construct(self, ak) -> None:
         _ensure_callback_target_class()
