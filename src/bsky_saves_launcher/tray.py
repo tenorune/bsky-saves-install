@@ -122,8 +122,17 @@ class TrayApp:
         os._exit(0)
 
     def _on_default(self, icon, item) -> None:  # noqa: F821
-        # Triggered by left-click on the icon (pystray default action).
-        self._on_open_status()
+        """Triggered by the tray menu's 'Show status…' item."""
+        import sys
+
+        print("[tray] Show status clicked → calling on_open_status", file=sys.stderr)
+        try:
+            self._on_open_status()
+        except Exception as exc:
+            print(f"[tray] on_open_status raised: {exc!r}", file=sys.stderr)
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
 
     def run(self) -> None:
         """Block on the pystray event loop. Must be called on the main thread."""

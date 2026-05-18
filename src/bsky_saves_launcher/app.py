@@ -234,6 +234,8 @@ def _run_probe() -> None:
 
 
 def main() -> int:
+    print("[launcher] BSky Saves launcher starting (v0.3.0 popover build)", file=sys.stderr)
+
     if os.environ.get("BSKY_SAVES_PROBE"):
         _run_probe()
         return 0
