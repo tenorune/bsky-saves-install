@@ -106,44 +106,13 @@ class TrayApp:
     def _on_open_gui(self, icon, item) -> None:  # noqa: F821
         _open_or_focus_gui()
 
-    def _on_copy_token(self, icon, item) -> None:  # noqa: F821, ARG002
-        """Read the pairing token from disk and copy to the clipboard.
-
-        Surfaces a brief macOS notification on success or failure so the
-        user knows the action took. The token value is not displayed
-        anywhere in the UI — clipboard is the only surface it touches.
-        """
-        from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
-        from bsky_saves_launcher.token import read_pairing_token
-
-        token = read_pairing_token()
-        if token is None:
-            self._notify(
-                "No pairing token yet",
-                "The helper hasn't created a token yet. It's generated on first run.",
-            )
-            return
-        try:
-            copy_to_clipboard(token)
-        except ClipboardError as exc:
-            self._notify("Copy failed", str(exc))
-            return
-        self._notify("Pairing token copied", "Paste it into saves.lightseed.net when prompted.")
-
-    def _notify(self, title: str, body: str) -> None:
-        """Show a brief macOS notification via osascript."""
-        import subprocess
-
-        # Escape double quotes for AppleScript literal strings.
-        safe_title = title.replace('"', '\\"')
-        safe_body = body.replace('"', '\\"')
-        script = (
-            f'display notification "{safe_body}" with title "{safe_title}"'
-        )
-        try:
-            subprocess.run(["osascript", "-e", script], check=False, timeout=5.0)
-        except (subprocess.SubprocessError, OSError):
-            pass
+    # NOTE: "Copy pairing token" was a tray menu item in v0.2.0 but caused two
+    # UX issues: (1) macOS `display notification` adds a "Show" button that
+    # opens Script Editor, which is jarring; (2) the action belongs in the
+    # status surface (popover), not the menu. The functionality lives in
+    # bsky_saves_launcher.token + .clipboard; reattach via the popover's
+    # Copy-token button when that lands. See
+    # docs/superpowers/specs/2026-05-17-status-window-contents.md D2.
 
     def _on_quit(self, icon, item) -> None:  # noqa: F821
         # The helper runs in a daemon thread inside this process and can't be
@@ -163,26 +132,48 @@ class TrayApp:
         menu = pystray.Menu(
             pystray.MenuItem("Show status...", self._on_default),
             pystray.MenuItem("Open GUI", self._on_open_gui),
-            pystray.MenuItem("Copy pairing token", self._on_copy_token),
             pystray.MenuItem("Quit", self._on_quit),
         )
         self._icon = pystray.Icon(
             name="bsky-saves",
             icon=_make_icon_image(running=self._supervisor.is_alive()),
-            title="Bsky Saves",
+            title="BSky Saves",
             menu=menu,
         )
+        # `setup` runs after pystray's NSStatusItem is created (the constructor
+        # only stashes our PIL image; the native item doesn't exist yet at
+        # this point). Set the macOS template-image flag from inside the
+        # callback so macOS handles light/dark/tinted adaptation.
+        self._icon.run(setup=self._on_pystray_ready)
+
+    def _on_pystray_ready(self, icon) -> None:  # noqa: ARG002 (icon == self._icon)
+        """pystray setup callback — runs once the NSStatusItem is alive."""
+        # Visible by default; pystray won't show the icon until we set this
+        # OR call icon.run() with a positional `visible=True`. Setting it
+        # explicitly here keeps the icon visible across any future
+        # restart/refresh logic.
+        if self._icon is not None:
+            self._icon.visible = True
         self._flag_macos_template_image()
-        self._icon.run()
 
     def _flag_macos_template_image(self) -> None:
-        """Tell macOS the menu-bar NSImage is a template image.
+        """Configure the menu-bar NSImage to match Apple's HIG.
 
-        pystray's macOS backend builds an NSImage from the Pillow image we
-        passed in, but it does not call setTemplate:YES. Setting the template
-        flag tells macOS to handle light/dark/tinted adaptation automatically.
-        Reaches into pystray's _darwin.Icon._status_item via PyObjC. Couples
-        us to a specific pystray internal — revisit if pystray restructures.
+        Two PyObjC tweaks to pystray's macOS NSImage:
+
+        1. setTemplate_(YES) — tells macOS this is a template image, so it
+           handles light/dark/tinted-mode adaptation automatically.
+        2. setSize_((22, 22)) — sets the *logical* (point) size to match
+           Apple's menu-bar template-image convention (Sonoma → Tahoe).
+           pystray hands the raw PNG bytes to NSImage without setting a
+           logical size, so NSImage defaults to the pixel size (88pt for
+           our 88x88 PNG) — which renders much larger than neighboring
+           system icons. The 88px pixel resolution remains as 4x retina
+           detail behind the 22pt logical render.
+
+        Must run AFTER pystray initializes the NSStatusItem (call from the
+        setup= callback to Icon.run()); calling earlier silently no-ops
+        because _status_item is still None.
         """
         import sys
 
@@ -195,10 +186,13 @@ class TrayApp:
             ns_image = status_item.button().image()
             if ns_image is not None:
                 ns_image.setTemplate_(True)
+                # PyObjC accepts a (w, h) tuple as an NSSize.
+                ns_image.setSize_((22, 22))
         except Exception:
             # Patch is best-effort — if pystray's internals shifted, fall
             # back to the un-flagged image. The launcher still works; the
-            # icon just doesn't auto-adapt to dark mode.
+            # icon just doesn't auto-adapt to dark mode and may render at
+            # the wrong size.
             pass
 
     def refresh_icon(self) -> None:

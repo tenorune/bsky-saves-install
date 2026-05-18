@@ -1,20 +1,26 @@
-"""Derive the menu-bar silhouette PNG from the brand-mark SVG.
+"""Derive the menu-bar silhouette PNG from the menu-bar source SVG.
 
 macOS menu-bar icons are conventionally template images: a single-color
 silhouette that macOS tints automatically based on the menu-bar appearance
 (light, dark, tinted). This script:
 
-1. Loads src/bsky_saves_launcher/resources/icon-source.svg.
-2. Strips top-level <rect> elements (these are background fills — in
-   icon.svg, a full-canvas rounded square). Without this, the silhouette
-   would be a filled rectangle instead of the glyph shape.
-3. Renders the stripped SVG at 88px via cairosvg.
-4. Thresholds the rendered alpha channel into a 1-bit silhouette mask.
-5. Composites a solid-black silhouette onto a transparent 88x88 canvas.
-6. Writes src/bsky_saves_launcher/resources/menubar.png.
+1. Renders src/bsky_saves_launcher/resources/menubar-source.svg at high
+   resolution via cairosvg (256px) so subsequent downsampling has plenty
+   of detail to work with.
+2. Crops to the bounding box of opaque pixels (any padding inside the
+   source SVG is removed so the glyph doesn't appear top-aligned in the
+   menu bar slot).
+3. Recolors the glyph to solid black while preserving the rendered
+   alpha channel (anti-aliased edges survive — no 1-bit threshold).
+4. Resizes the cropped glyph to fit the final 88x88 canvas with a small
+   safe-area margin, centered.
+5. Writes src/bsky_saves_launcher/resources/menubar.png.
 
-88px = 22pt @ 4x, which covers all current macOS menu-bar scales with
-headroom. pystray reads the PNG and scales down as needed.
+88px = 22pt @ 4x. pystray hands the PNG to macOS, which downscales it
+to the menu-bar's actual size with proper anti-aliasing. The
+`setTemplate:` flag is set at runtime via PyObjC in
+src/bsky_saves_launcher/tray.py (a pystray setup callback) so macOS
+handles light/dark/tinted mode adaptation.
 
 Run: python scripts/build_menubar_icon.py
 """
@@ -22,53 +28,70 @@ Run: python scripts/build_menubar_icon.py
 from __future__ import annotations
 
 import io
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import cairosvg
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parent.parent
-SRC = ROOT / "src" / "bsky_saves_launcher" / "resources" / "icon-source.svg"
+SRC = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar-source.svg"
 DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.png"
 
-SIZE = 88
-ALPHA_THRESHOLD = 128
-SVG_NS = "http://www.w3.org/2000/svg"
-
-
-def _strip_background_rects(svg_bytes: bytes) -> bytes:
-    """Remove top-level <rect> elements from an SVG (background fills)."""
-    ET.register_namespace("", SVG_NS)
-    root = ET.fromstring(svg_bytes)
-    rect_tag = f"{{{SVG_NS}}}rect"
-    for rect in list(root.findall(rect_tag)):
-        root.remove(rect)
-    return ET.tostring(root, encoding="utf-8", xml_declaration=False)
+# Render at higher resolution than the final canvas so the LANCZOS downsample
+# has detail to preserve. macOS will downscale further at runtime.
+RENDER_SIZE = 256
+# Final canvas pixel size. The launcher additionally sets the NSImage's
+# *logical* size to 22pt via PyObjC (see tray.py::_flag_macos_template_image),
+# matching Apple's menu-bar template-image convention. 88px = 22pt @ 4x retina.
+CANVAS_SIZE = 88
+# Inner margin so the glyph sits at the standard ~16-17pt visible size within
+# the 22pt menu-bar slot (Apple HIG for template images, consistent from
+# Sonoma through Tahoe). 15% per side = glyph fills 70% of the slot ≈ 15.4pt.
+PADDING_RATIO = 0.15
 
 
 def main() -> int:
     if not SRC.exists():
-        print(f"ERROR: {SRC} not found. See plan Task 1.")
+        print(f"ERROR: {SRC} not found.")
         return 1
 
-    svg_bytes = _strip_background_rects(SRC.read_bytes())
+    # 1. Render the SVG at high resolution.
     png_bytes = cairosvg.svg2png(
-        bytestring=svg_bytes,
-        output_width=SIZE,
-        output_height=SIZE,
+        bytestring=SRC.read_bytes(),
+        output_width=RENDER_SIZE,
+        output_height=RENDER_SIZE,
     )
     rendered = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
 
-    # Build silhouette mask from alpha (anywhere the SVG painted, we draw).
-    alpha = rendered.getchannel("A")
-    mask = alpha.point(lambda v: 255 if v >= ALPHA_THRESHOLD else 0)
+    # 2. Crop to the bounding box of visible pixels — strips any padding the
+    # SVG carries and prevents the glyph from being top- or off-aligned when
+    # macOS centers the image in the menu-bar slot.
+    bbox = rendered.getchannel("A").getbbox()
+    if bbox is None:
+        print("ERROR: rendered SVG has no visible pixels.")
+        return 1
+    glyph = rendered.crop(bbox)
 
-    # Solid black silhouette on transparent canvas. macOS template-image
-    # rendering ignores color and uses alpha; black is the convention.
-    canvas = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 0))
-    silhouette = Image.new("RGBA", (SIZE, SIZE), (0, 0, 0, 255))
-    canvas.paste(silhouette, (0, 0), mask)
+    # 3. Recolor to solid black, preserve the rendered alpha (no thresholding —
+    # smooth anti-aliased edges survive downsampling).
+    alpha = glyph.getchannel("A")
+    silhouette = Image.new("RGBA", glyph.size, (0, 0, 0, 0))
+    silhouette.paste((0, 0, 0, 255), (0, 0), alpha)
+
+    # 4. Resize the cropped glyph to fit inside CANVAS_SIZE with safe-area
+    # padding. Maintain aspect ratio; longest side fills the inner box.
+    inner = int(CANVAS_SIZE * (1 - 2 * PADDING_RATIO))
+    glyph_w, glyph_h = silhouette.size
+    scale = inner / max(glyph_w, glyph_h)
+    new_w = max(1, int(round(glyph_w * scale)))
+    new_h = max(1, int(round(glyph_h * scale)))
+    resized = silhouette.resize((new_w, new_h), Image.LANCZOS)
+
+    # 5. Center on a transparent canvas.
+    canvas = Image.new("RGBA", (CANVAS_SIZE, CANVAS_SIZE), (0, 0, 0, 0))
+    x = (CANVAS_SIZE - new_w) // 2
+    y = (CANVAS_SIZE - new_h) // 2
+    canvas.paste(resized, (x, y), resized)
 
     DEST.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(DEST, "PNG")
