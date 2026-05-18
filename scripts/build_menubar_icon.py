@@ -40,10 +40,14 @@ DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.png"
 # Render at higher resolution than the final canvas so the LANCZOS downsample
 # has detail to preserve. macOS will downscale further at runtime.
 RENDER_SIZE = 256
-# Final canvas size. pystray accepts any size; macOS downscales to ~22pt.
+# Final canvas pixel size. The launcher additionally sets the NSImage's
+# *logical* size to 22pt via PyObjC (see tray.py::_flag_macos_template_image),
+# matching Apple's menu-bar template-image convention. 88px = 22pt @ 4x retina.
 CANVAS_SIZE = 88
-# Inner margin so the glyph doesn't kiss the menu-bar slot edges.
-PADDING_RATIO = 0.05
+# Inner margin so the glyph sits at the standard ~16-17pt visible size within
+# the 22pt menu-bar slot (Apple HIG for template images, consistent from
+# Sonoma through Tahoe). 15% per side = glyph fills 70% of the slot ≈ 15.4pt.
+PADDING_RATIO = 0.15
 
 
 def main() -> int:

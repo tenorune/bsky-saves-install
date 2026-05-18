@@ -157,15 +157,23 @@ class TrayApp:
         self._flag_macos_template_image()
 
     def _flag_macos_template_image(self) -> None:
-        """Tell macOS the menu-bar NSImage is a template image.
+        """Configure the menu-bar NSImage to match Apple's HIG.
 
-        pystray's macOS backend builds an NSImage from the Pillow image we
-        passed in, but it does not call setTemplate:YES. Setting the template
-        flag tells macOS to handle light/dark/tinted adaptation automatically.
-        Reaches into pystray's _darwin.Icon._status_item via PyObjC. Must be
-        called AFTER pystray initializes the status item (use the setup=
-        callback to Icon.run()); calling earlier silently no-ops because
-        _status_item is still None.
+        Two PyObjC tweaks to pystray's macOS NSImage:
+
+        1. setTemplate_(YES) — tells macOS this is a template image, so it
+           handles light/dark/tinted-mode adaptation automatically.
+        2. setSize_((22, 22)) — sets the *logical* (point) size to match
+           Apple's menu-bar template-image convention (Sonoma → Tahoe).
+           pystray hands the raw PNG bytes to NSImage without setting a
+           logical size, so NSImage defaults to the pixel size (88pt for
+           our 88x88 PNG) — which renders much larger than neighboring
+           system icons. The 88px pixel resolution remains as 4x retina
+           detail behind the 22pt logical render.
+
+        Must run AFTER pystray initializes the NSStatusItem (call from the
+        setup= callback to Icon.run()); calling earlier silently no-ops
+        because _status_item is still None.
         """
         import sys
 
@@ -178,10 +186,13 @@ class TrayApp:
             ns_image = status_item.button().image()
             if ns_image is not None:
                 ns_image.setTemplate_(True)
+                # PyObjC accepts a (w, h) tuple as an NSSize.
+                ns_image.setSize_((22, 22))
         except Exception:
             # Patch is best-effort — if pystray's internals shifted, fall
             # back to the un-flagged image. The launcher still works; the
-            # icon just doesn't auto-adapt to dark mode.
+            # icon just doesn't auto-adapt to dark mode and may render at
+            # the wrong size.
             pass
 
     def refresh_icon(self) -> None:
