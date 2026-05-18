@@ -239,6 +239,41 @@ def _build_more_view(
     return stack, start_at_login_switch, version_label
 
 
+def _wrap_in_active_visual_effect(inner):
+    """Return an NSVisualEffectView (popover material, state=active) wrapping `inner`.
+
+    Sized to the inner view's frame; the inner is added as a subview at
+    origin (0,0). Returning the VEV lets the NSPopover content controller
+    treat it as the root view — its frame.size still drives setContentSize_
+    in show(), so popover sizing logic is unchanged.
+
+    Why: NSPopover's default material reflects the host window's key state,
+    which produces a visible color/opacity shift the moment a control inside
+    the popover takes focus. state=NSVisualEffectStateActive forces the
+    appearance to stay locked to "active" regardless of window focus.
+    """
+    from AppKit import (  # type: ignore[import-not-found]
+        NSVisualEffectBlendingModeBehindWindow,
+        NSVisualEffectMaterialPopover,
+        NSVisualEffectStateActive,
+        NSVisualEffectView,
+    )
+
+    frame = inner.frame()
+    try:
+        size = (frame.size.width, frame.size.height)
+    except AttributeError:
+        size = (frame[1][0], frame[1][1])
+
+    vev = NSVisualEffectView.alloc().initWithFrame_(((0, 0), size))
+    vev.setMaterial_(NSVisualEffectMaterialPopover)
+    vev.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
+    vev.setState_(NSVisualEffectStateActive)
+    inner.setFrame_(((0, 0), size))
+    vev.addSubview_(inner)
+    return vev
+
+
 def _format_versions(
     launcher_version: str, helper_version: str | None, gui_version: str | None
 ) -> str:
@@ -332,6 +367,12 @@ class StatusPopover:
             if button is None:
                 print("[popover] status_item.button() is None", file=sys.stderr)
                 return
+            # Always start at the Default view. NSPopover keeps whichever
+            # NSView the content controller is pointing at across hide/show,
+            # so without this reset the popover would re-open on the More
+            # panel after the user navigated there in a previous round.
+            if self._content_controller is not None and self._default_view is not None:
+                self._content_controller.setView_(self._default_view)
             # Resize the popover to match whichever view is currently active.
             if self._content_controller is not None:
                 view = self._content_controller.view()
@@ -382,6 +423,14 @@ class StatusPopover:
             on_back=self._on_back_to_default,
             targets_out=self._button_targets,
         )
+
+        # Wrap each root in an NSVisualEffectView locked to "active" state.
+        # NSPopover otherwise renders its material with the host window's
+        # key state, which causes a visible appearance shift the moment a
+        # control inside the popover takes focus (e.g. when the user clicks
+        # a button). state=Active pins the appearance regardless of focus.
+        default_root = _wrap_in_active_visual_effect(default_root)
+        more_root = _wrap_in_active_visual_effect(more_root)
 
         self._default_view = default_root
         self._more_view = more_root
