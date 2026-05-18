@@ -6,7 +6,25 @@
 
 ## Background
 
-v0.1 ships an `osascript display dialog` placeholder as the status surface (see `docs/v0.1-lessons.md` § 2). The follow-up implementation should be a real in-process window using NSWindow via PyObjC (pystray already pulls `pyobjc` on macOS). Tkinter is **not** an option — Tk and pystray cannot share macOS's main runloop.
+v0.1 ships an `osascript display dialog` placeholder as the status surface (see `docs/v0.1-lessons.md` § 2). The follow-up implementation should be a real in-process popover using PyObjC's `NSPopover` (pystray already pulls `pyobjc` on macOS). Tkinter is **not** an option — Tk and pystray cannot share macOS's main runloop.
+
+State in the system lives in three places:
+
+```
+   ┌──────────────┐         ┌──────────────┐         ┌──────────────┐
+   │   Launcher   │         │    Helper    │         │     GUI      │
+   │  (the .app)  │◄─pings──┤ (bsky-saves  │◄─HTTPS──┤  (browser)   │
+   │              │         │   serve)     │         │              │
+   └──────────────┘         └──────────────┘         └──────────────┘
+```
+
+The popover is part of the launcher process, so:
+
+- **Launcher-internal facts** (version, supervisor state, env vars, locally-persisted prefs) are read directly. No new channel.
+- **Helper facts** are read via the helper's HTTP API on `127.0.0.1:47826`. We can only read what the helper exposes; surfacing new helper-side facts means asking the CLI team to grow new endpoints.
+- **GUI-only facts** (browser-side state, Pyodide-fallback work the helper isn't aware of) have *no channel today*. Surfacing them requires a relay endpoint on the helper that the GUI POSTs to and the launcher subscribes from. Decided: when this becomes a priority, design it as **GUI → helper → launcher relay**, never GUI → launcher directly. Tracked as a future follow-up spec.
+
+The bigger priorities for this spec are the launcher-internal column and a small set of new helper surfaces. The GUI-relay row is deferred.
 
 ## Requirements captured to date
 
@@ -35,7 +53,7 @@ Mirror of the tray "Quit" menu item, useful when the status window is focused an
 ## Open questions for the full spec
 
 - ~~**Window vs panel?**~~ **Resolved: popover anchored to the tray icon (NSPopover + NSStatusItem button as anchor).** Native, discoverable, dismisses cleanly on click-outside when the user moves on. Live updates work in any container — popover doesn't preclude them; the widget state lives in the model layer regardless of view visibility.
-- **Auto-refresh cadence?** The helper version is static for a given install; the running/stopped state and log tail change. Poll on a timer (every ~2 s) only while the window is visible.
+- ~~**Auto-refresh cadence?**~~ **Resolved: event-driven for launcher-internal facts; short-poll fallback for helper facts.** Launcher-internal state changes (supervisor exit, `/ping` becomes-available, log-line arrival, preference toggles) push to subscribed views via callbacks — zero lag, low cost since it's all in-process. Helper-internal facts (anything beyond what's in `/ping` cache) are pulled by short-polling the helper's API while the popover is open, until/unless the helper grows an SSE or WebSocket subscription endpoint we can attach to. The CLI team's `helper-control-endpoints` follow-up is the natural place to spec that subscription channel.
 - **Token display privacy.** R1 calls for truncation. Confirm with the helper team that revealing the first N hex chars doesn't materially weaken the token (which is 32 random hex chars per `bsky-saves token`'s implementation — leaking 8 leaves 24 chars / 96 bits of entropy, still safe).
 
 ## Cross-references
