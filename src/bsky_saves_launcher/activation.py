@@ -7,10 +7,14 @@ Two policies relevant for a menu-bar daemon launcher:
 - NSApplicationActivationPolicyRegular   (=0): standard foreground app
   with Dock entry + Cmd-Tab.
 
-Toggleable at runtime via NSApp.setActivationPolicy_. macOS has minor
-visual quirks during the transition (Dock icon may flash briefly) but
-the pattern is used by Bartender, Hammerspoon, AeroSpace, Rectangle,
-and many others in production.
+Toggleable at runtime via NSApp.setActivationPolicy_. Going from Regular
+to Accessory mid-session needs a `hide` first (and a brief `deactivate`)
+to fully evict the app from the app switcher — without it, macOS lazily
+keeps the app in Cmd-Tab even after the policy is supposedly Accessory.
+The Dock's "recent applications" entry is a separate Dock-side cache
+that we cannot suppress; the user clears it via right-click → Remove
+from Dock or by toggling off System Settings → Desktop & Dock → Show
+Recent Apps.
 """
 
 from __future__ import annotations
@@ -39,5 +43,21 @@ def apply_activation_policy(*, show_in_dock: bool) -> None:
     except ImportError:
         return
 
-    policy = ACTIVATION_POLICY_REGULAR if show_in_dock else ACTIVATION_POLICY_ACCESSORY
-    NSApplication.sharedApplication().setActivationPolicy_(policy)
+    nsapp = NSApplication.sharedApplication()
+
+    if show_in_dock:
+        nsapp.setActivationPolicy_(ACTIVATION_POLICY_REGULAR)
+        return
+
+    # Regular → Accessory transition. Without hide_ + deactivate, macOS
+    # often leaves the app in Cmd-Tab even though the policy is Accessory.
+    # The order matters: hide and deactivate first, then change policy.
+    try:
+        nsapp.hide_(None)
+    except Exception:
+        pass
+    try:
+        nsapp.deactivate()
+    except Exception:
+        pass
+    nsapp.setActivationPolicy_(ACTIVATION_POLICY_ACCESSORY)
