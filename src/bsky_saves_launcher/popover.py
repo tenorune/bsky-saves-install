@@ -417,22 +417,38 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
-            # Keep the menu-bar button visually pressed while the popover is
-            # open, the same way AppleScript / system menu-bar items do.
-            # NSStatusBarButton honors highlight_(True).
+            # Make our app the active app while the popover is shown. Without
+            # this, the popover's window never becomes "active" (LSUIElement
+            # apps don't auto-activate on click), and macOS renders the
+            # popover's frame VEV in its inactive material — that's the
+            # color/opacity shift the user sees when focus moves inside the
+            # popover. activateIgnoringOtherApps_ + a fixed appearance on
+            # the popover holds the chrome stable.
             try:
-                button.highlight_(True)
+                from AppKit import NSApp  # type: ignore[import-not-found]
+
+                NSApp.activateIgnoringOtherApps_(True)
+                try:
+                    self._popover.setAppearance_(NSApp.effectiveAppearance())
+                except Exception:
+                    pass
+            except Exception:
+                pass
+            # Keep the menu-bar button visually pressed while the popover is
+            # open. NSStatusBarButton's transient highlight_(True) is reset
+            # the moment the click event finishes — pin the persistent state
+            # via the cell + force redraw.
+            try:
+                cell = button.cell()
+                if cell is not None:
+                    cell.setHighlighted_(True)
+                button.setNeedsDisplay_(True)
             except Exception:
                 pass
             self._tray_button = button
-            # Lock the popover's *chrome* (the arrow / frame) to the active
-            # visual-effect appearance too. The content VEV (wrapped in
-            # _construct) handles the panel body, but the system-drawn arrow
-            # is owned by the popover's private window frame view; walk the
-            # NSPopover window's view tree and pin any NSVisualEffectView we
-            # find to state=Active. Best-effort — Apple may rename the
-            # private classes; on failure the arrow keeps shifting but the
-            # body stays stable.
+            # Backup: walk the popover window's view tree and pin any
+            # NSVisualEffectView to state=Active. Belt-and-braces with the
+            # app-activate above.
             try:
                 self._pin_popover_frame_active()
             except Exception as exc:
@@ -612,7 +628,10 @@ class StatusPopover:
         self._stop_refresh_timer()
         if self._tray_button is not None:
             try:
-                self._tray_button.highlight_(False)
+                cell = self._tray_button.cell()
+                if cell is not None:
+                    cell.setHighlighted_(False)
+                self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
 
@@ -648,7 +667,16 @@ class StatusPopover:
         def walk(v):
             if v is None:
                 return
-            if isinstance(v, NSVisualEffectView):
+            # isKindOfClass_ catches private NSVisualEffectView subclasses
+            # that Python's isinstance can miss; respondsToSelector_ is the
+            # duck-typed fallback if the class check is unexpectedly false.
+            try:
+                matches = v.isKindOfClass_(NSVisualEffectView) or v.respondsToSelector_(
+                    "setState:"
+                )
+            except Exception:
+                matches = False
+            if matches:
                 try:
                     v.setState_(NSVisualEffectStateActive)
                 except Exception:
@@ -660,11 +688,10 @@ class StatusPopover:
             for sub in subs:
                 walk(sub)
 
+        # Start from the window's content view's *parent* (the popover's
+        # private frame view) so we sweep both frame and contentView trees.
         content = window.contentView()
         if content is None:
             return
-        # Start one level above the content view to catch the popover's
-        # frame view (which is a sibling/parent of contentView in NSPopover's
-        # window hierarchy).
         root = content.superview() or content
         walk(root)
