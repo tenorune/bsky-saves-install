@@ -11,7 +11,7 @@ import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
 if TYPE_CHECKING:
     import pystray
@@ -76,13 +76,18 @@ def _open_or_focus_gui() -> None:
     webbrowser.open(LOCAL_GUI_URL)
 
 
-def _make_icon_image(*, running: bool) -> Image.Image:
-    """Render a 64x64 RGBA icon. Green dot when running, gray when stopped."""
-    img = Image.new("RGBA", (64, 64), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    color = (60, 200, 90, 255) if running else (160, 160, 160, 255)
-    draw.ellipse((8, 8, 56, 56), fill=color)
-    return img
+def _make_icon_image(*, running: bool) -> Image.Image:  # noqa: ARG001 (running unused in v0.2.0)
+    """Load the bundled menu-bar silhouette.
+
+    v0.2.0: a single template-image silhouette regardless of state. State
+    indication via badge overlay is planned for a later release (see
+    docs/superpowers/specs/2026-05-18-launcher-ux.md R3).
+    """
+    from pathlib import Path
+
+    here = Path(__file__).resolve().parent
+    path = here / "resources" / "menubar.png"
+    return Image.open(path).convert("RGBA")
 
 
 class TrayApp:
