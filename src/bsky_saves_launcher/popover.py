@@ -498,24 +498,31 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Keep the menu-bar button visually pressed while the popover
-            # is open. Set the highlight SYNCHRONOUSLY inside this action
-            # callback. The cell's mouseUp tracking calls
-            # setHighlighted_(False) just before it fires our action, so
-            # our setHighlighted_(True) here is the last write before the
-            # event-loop redraw — the user sees no visible un-highlight.
-            # NSTimer (even at 0.0) was pushing the re-apply to the *next*
-            # runloop turn, after AppKit had already redrawn with the
-            # system's False — that was the open-click blink we couldn't
-            # eliminate via timer-based re-apply.
+            # is open. NSStatusBarButton's cell un-highlights itself
+            # AFTER firing our action on mouseUp, so a synchronous
+            # setHighlighted_(True) inside this callback gets overwritten
+            # — empirically verified on Tahoe (no visible Selected state).
+            # Schedule the re-apply for the next runloop turn via
+            # NSTimer 0.05s; brief blink between system unhighlight and
+            # our re-apply is the tradeoff.
             self._tray_button = button
+
+            def _apply_highlight(_t):
+                try:
+                    button.setHighlighted_(True)
+                    cell = button.cell()
+                    if cell is not None:
+                        cell.setHighlighted_(True)
+                    button.setNeedsDisplay_(True)
+                except Exception as exc:
+                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+
             try:
-                button.setHighlighted_(True)
-                cell = button.cell()
-                if cell is not None:
-                    cell.setHighlighted_(True)
-                button.setNeedsDisplay_(True)
-            except Exception as exc:
-                print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
+                    0.05, False, _apply_highlight
+                )
+            except Exception:
+                pass
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance
