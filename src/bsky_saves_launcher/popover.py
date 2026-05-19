@@ -486,8 +486,21 @@ class StatusPopover:
             pass
 
     def toggle(self) -> None:
-        """Open if closed, close if open."""
+        """Open if closed, close if open.
+
+        On the close path, un-highlight the tray button synchronously
+        before calling performClose_ — popoverWillClose_'s un-highlight
+        may fire asynchronously on some macOS versions, leaving the
+        button visibly "stuck on" between the toggle-click and the
+        async willClose callback.
+        """
         if self.is_shown():
+            if self._tray_button is not None:
+                try:
+                    self._tray_button.setHighlighted_(False)
+                    self._tray_button.setNeedsDisplay_(True)
+                except Exception:
+                    pass
             self.close()
         else:
             self.show()
@@ -878,6 +891,7 @@ class StatusPopover:
         Un-highlight the tray button immediately so the pressed-state
         release lands at the start of the close animation, not after it.
         """
+        print("[popover] willClose fired", file=sys.stderr)
         if self._tray_button is not None:
             try:
                 self._tray_button.setHighlighted_(False)
