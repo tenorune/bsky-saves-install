@@ -493,33 +493,14 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
-            # Keep the menu-bar button visually pressed while the popover is
-            # open. NSStatusBarButton resets its highlight at mouseUp on the
-            # same click that triggered our action, so any setHighlighted_
-            # we call synchronously gets undone the moment this function
-            # returns. Schedule on the next run-loop turn via NSTimer.
+            # Mark the menu-bar button Selected while the popover is open.
+            # The tray button is configured state-driven (see
+            # TrayApp._configure_state_driven_button), so this is a single
+            # property set — no NSTimer, no flicker.
             self._tray_button = button
-
-            def _apply_highlight(_t):
-                try:
-                    button.setHighlighted_(True)
-                    cell = button.cell()
-                    if cell is not None:
-                        cell.setHighlighted_(True)
-                    button.setNeedsDisplay_(True)
-                except Exception as exc:
-                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
-
             try:
-                # 0.0 schedules the highlight for the very next runloop
-                # turn — as soon as the current click event finishes and
-                # NSStatusBarButton's auto-unhighlight on mouseUp is over.
-                # The previous 0.05s delay added a visible "blink" between
-                # the system unhighlight and our re-highlight; firing at
-                # 0 closes that gap.
-                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
-                    0.0, False, _apply_highlight
-                )
+                button.setState_(1)  # NSControlStateValueOn = Selected
+                button.setNeedsDisplay_(True)
             except Exception:
                 pass
             # Lock the popover window's appearance to the current system
@@ -719,24 +700,58 @@ class StatusPopover:
         self._content_controller = self._default_controller
 
     def _animated_swap_controller(self, controller) -> None:
-        """Replace the popover's contentViewController with a slower-than-
-        default animation. NSPopover's built-in animate is ~0.25s; the
-        user asked for half-speed, so override via NSAnimationContext at
-        0.5s. The .animator() proxy routes the property change through
-        the animation system."""
+        """Swap the popover's contentViewController and animate the size
+        change ourselves.
+
+        NSPopover.setContentViewController_ has an intrinsic cross-fade
+        between the old and new view controllers — that's the panel
+        "blink" the user notices. To kill the flash and control the
+        animation speed, we do the swap with animates=False (instant,
+        no fade), rewind the popover's contentSize to the old size,
+        then animate forward to the new size at our chosen duration.
+        Visually: the new panel content appears immediately, then the
+        popover smoothly resizes around it.
+        """
         try:
             from AppKit import NSAnimationContext  # type: ignore[import-not-found]
+        except Exception:
+            try:
+                self._popover.setContentViewController_(controller)
+            except Exception:
+                pass
+            return
+
+        try:
+            old_size = self._popover.contentSize()
+            new_size = controller.preferredContentSize()
+            try:
+                old_w = old_size.width
+                old_h = old_size.height
+            except AttributeError:
+                old_w, old_h = old_size[0], old_size[1]
+            try:
+                new_w = new_size.width
+                new_h = new_size.height
+            except AttributeError:
+                new_w, new_h = new_size[0], new_size[1]
+
+            self._popover.setAnimates_(False)
+            self._popover.setContentViewController_(controller)
+            # setContentViewController_ snaps contentSize to the new
+            # controller's preferredContentSize. Rewind so the explicit
+            # animation below has somewhere to animate from.
+            self._popover.setContentSize_((old_w, old_h))
+            self._popover.setAnimates_(True)
 
             NSAnimationContext.beginGrouping()
             try:
                 ctx = NSAnimationContext.currentContext()
                 ctx.setDuration_(0.5)
-                self._popover.animator().setContentViewController_(controller)
+                self._popover.animator().setContentSize_((new_w, new_h))
             finally:
                 NSAnimationContext.endGrouping()
-        except Exception:
-            # Fall back to a plain (non-animated) swap if the animation
-            # path isn't available for any reason.
+        except Exception as exc:
+            print(f"[popover] animated swap failed: {exc!r}", file=sys.stderr)
             try:
                 self._popover.setContentViewController_(controller)
             except Exception:
@@ -774,17 +789,12 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Un-highlight the tray button immediately so the button's
-        pressed-state release is in sync with the user's click, rather
-        than waiting for the close animation to finish (which felt
-        sluggish).
+        Mark the tray button Unselected immediately so the pressed-state
+        release lands at the start of the close animation, not after it.
         """
         if self._tray_button is not None:
             try:
-                self._tray_button.setHighlighted_(False)
-                cell = self._tray_button.cell()
-                if cell is not None:
-                    cell.setHighlighted_(False)
+                self._tray_button.setState_(0)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
