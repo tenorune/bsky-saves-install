@@ -319,13 +319,21 @@ class TrayApp:
             print(f"[tray] _start_health_timer failed: {exc!r}", file=sys.stderr)
 
     def _on_health_tick(self) -> None:
-        """Compute health and toggle the badge.
+        """Compute health, toggle the badge, and auto-restart a dead helper.
 
-        Only failure-mode states surface a (red) badge. Healthy and
-        transient-starting states keep the badge hidden — the user only
-        wants the menu bar to draw attention when something is wrong.
+        Only failure-mode states surface a (red) badge — healthy and
+        transient-starting states keep the badge hidden.
+
+        Auto-restart: bsky-saves' serve thread dies if it can't bind to
+        port 47826 (e.g. another bsky-saves was already running at our
+        launch). Without restart logic the helper stays dead forever even
+        after the conflicting instance quits. On every tick where the
+        supervisor thread is no longer alive, ask the supervisor to
+        re-start; Supervisor.start() is a no-op if the thread is already
+        running, so this is safe to call unconditionally.
         """
         import sys
+        import time
 
         if self._badge_layer is None:
             return
@@ -339,6 +347,14 @@ class TrayApp:
             )
             if snapshot.last_seen_ok is not None:
                 self._last_ping_ok = snapshot.last_seen_ok
+
+            if not self._supervisor.is_alive():
+                # Helper thread is dead — restart. Reset the start clock so
+                # the next few ticks see STARTING (within grace) rather
+                # than UNRESPONSIVE.
+                self._helper_started = time.monotonic()
+                self._supervisor.start()
+
             show = _state_should_show_badge(snapshot.state)
             self._badge_layer.setHidden_(not show)
             if show:
