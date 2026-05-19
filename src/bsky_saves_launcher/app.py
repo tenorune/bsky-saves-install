@@ -251,7 +251,9 @@ def main() -> int:
 
     def _open_status() -> None:
         if popover_holder["popover"] is None:
-            popover_holder["popover"] = StatusPopover(supervisor, tray.icon_handle())
+            popover_holder["popover"] = StatusPopover(
+                supervisor, tray.icon_handle(), tray=tray
+            )
             popover_holder["popover"].notify_helper_started()
         popover_holder["popover"].show()
 

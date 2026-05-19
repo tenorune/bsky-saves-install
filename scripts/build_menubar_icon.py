@@ -33,6 +33,7 @@ from PIL import Image
 ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar-source.svg"
 DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.png"
+PDF_DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.pdf"
 
 # Final canvas pixel size. The launcher additionally sets the NSImage's
 # *logical* size to 22pt via PyObjC (see tray.py::_flag_macos_template_image),
@@ -100,6 +101,47 @@ def main() -> int:
     DEST.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(DEST, "PNG")
     print(f"Wrote {DEST} (glyph {gx}x{gy} in {CANVAS_SIZE}x{CANVAS_SIZE} canvas)")
+
+    # Also emit a vector PDF for use as a true-vector menu-bar icon (NSImage
+    # loads PDF natively on all macOS versions; the launcher prefers the PDF
+    # when present, falling back to the PNG otherwise). Build a tight-viewBox
+    # wrapper SVG so the PDF page bounds equal the glyph's bbox (with the
+    # same PADDING_RATIO margin as the PNG canvas) — otherwise the SVG's
+    # original 24×24 viewBox produces a tiny visible glyph after macOS
+    # scales the PDF to 22pt.
+    svg_w = (probe_bbox[2] - probe_bbox[0]) / PROBE_SIZE * 24.0
+    svg_h = (probe_bbox[3] - probe_bbox[1]) / PROBE_SIZE * 24.0
+    svg_x0 = probe_bbox[0] / PROBE_SIZE * 24.0
+    svg_y0 = probe_bbox[1] / PROBE_SIZE * 24.0
+    # Make the canvas square at max(svg_w, svg_h)/0.7 so the glyph fills
+    # ~70% of the canvas's longer side.
+    glyph_max = max(svg_w, svg_h)
+    canvas_side = glyph_max / (1 - 2 * PADDING_RATIO)
+    offset_x = (canvas_side - svg_w) / 2
+    offset_y = (canvas_side - svg_h) / 2
+    new_x = svg_x0 - offset_x
+    new_y = svg_y0 - offset_y
+
+    # Embed the source SVG's inner content into a tight-viewBox wrapper.
+    src_text = svg_bytes.decode("utf-8")
+    # Extract everything inside the outermost <svg ...>...</svg>.
+    import re
+
+    m = re.search(r"<svg[^>]*>(.*)</svg>", src_text, re.DOTALL)
+    if m is None:
+        print("WARNING: couldn't extract SVG inner content; PDF will use source viewBox")
+        tight_svg_bytes = svg_bytes
+    else:
+        inner = m.group(1)
+        tight_svg = (
+            f'<svg xmlns="http://www.w3.org/2000/svg" '
+            f'viewBox="{new_x} {new_y} {canvas_side} {canvas_side}">'
+            f"{inner}</svg>"
+        )
+        tight_svg_bytes = tight_svg.encode("utf-8")
+
+    cairosvg.svg2pdf(bytestring=tight_svg_bytes, write_to=str(PDF_DEST))
+    print(f"Wrote {PDF_DEST}")
     return 0
 
 

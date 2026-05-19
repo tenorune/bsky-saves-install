@@ -434,10 +434,14 @@ def _ensure_callback_target_class() -> None:
 class StatusPopover:
     """Owns the popover and its lifecycle. Constructed lazily on first show."""
 
-    def __init__(self, supervisor: Supervisor, tray_icon_ref) -> None:
-        """tray_icon_ref is the pystray.Icon — we need _status_item for anchor."""
+    def __init__(self, supervisor: Supervisor, tray_icon_ref, *, tray=None) -> None:
+        """tray_icon_ref is the pystray.Icon — we need _status_item for anchor.
+        tray is the TrayApp owning the icon — used to drive the Selected
+        layer (independent of the system highlight, which doesn't always
+        render visibly on Tahoe)."""
         self._supervisor = supervisor
         self._tray_icon_ref = tray_icon_ref
+        self._tray = tray
         self._popover = None  # NSPopover; constructed on first show
         self._content_controller = None
         self._default_controller = None
@@ -494,22 +498,21 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Mark the menu-bar button Selected while the popover is open.
-            # NSStatusBarButton resets its highlight at mouseUp on the same
-            # click that fired our action, so we keep it pressed via:
-            #   1. an immediate synchronous setHighlighted_(True) — fires
-            #      inside the same event tick as the system's un-highlight,
-            #      typically winning the final redraw.
-            #   2. a high-frequency keeper timer (~120Hz) on
-            #      NSRunLoopCommonModes that re-applies the highlight every
-            #      frame while the popover is open. Any frame where the
-            #      system briefly cleared it gets corrected within ~8ms.
+            # We show a CALayer-based selected background (owned by TrayApp)
+            # which doesn't depend on AppKit's intrinsic highlight — that
+            # was unreliable on Tahoe. setHighlighted_ is still set as a
+            # secondary cue for AppKit-aware tooling.
             self._tray_button = button
+            if self._tray is not None:
+                try:
+                    self._tray.set_selected(True)
+                except Exception:
+                    pass
             try:
                 button.setHighlighted_(True)
                 button.setNeedsDisplay_(True)
             except Exception:
                 pass
-            self._start_highlight_keeper(button)
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance
@@ -735,7 +738,11 @@ class StatusPopover:
             self._popover.setAnimates_(False)
             self._popover.setContentViewController_(controller)
             self._popover.setContentSize_((old_w, old_h))
-            self._popover.setAnimates_(True)
+            # Keep animates=False during the manual tween — if it's True,
+            # the popover may run its own internal animation on each
+            # setContentSize_ call, which interferes with our frame-by-
+            # frame steps and produces no visible motion. The tween
+            # completion restores it.
 
             self._start_size_tween(old_w, old_h, new_w, new_h, duration_s=0.5)
         except Exception as exc:
@@ -788,7 +795,17 @@ class StatusPopover:
                 except Exception:
                     pass
                 self._size_tween_timer = None
+                # Restore animates so future show/hide animations work.
+                try:
+                    popover.setAnimates_(True)
+                except Exception:
+                    pass
 
+        print(
+            f"[popover] tween {ow:.0f}x{oh:.0f} -> {nw:.0f}x{nh:.0f} "
+            f"over {duration_s}s ({n_steps} steps)",
+            file=sys.stderr,
+        )
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
         self._size_tween_timer = timer
@@ -825,49 +842,21 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Stop the highlight keeper and un-highlight the tray button right
+        Hide the selected indicator and clear the AppKit highlight right
         away so the pressed-state release lands at the start of the close
         animation, not after it.
         """
-        self._stop_highlight_keeper()
+        if self._tray is not None:
+            try:
+                self._tray.set_selected(False)
+            except Exception:
+                pass
         if self._tray_button is not None:
             try:
                 self._tray_button.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
-
-    def _start_highlight_keeper(self, button) -> None:
-        """Schedule a high-frequency timer that re-asserts the tray button's
-        highlight while the popover is open."""
-        try:
-            from Foundation import (  # type: ignore[import-not-found]
-                NSRunLoop,
-                NSRunLoopCommonModes,
-                NSTimer,
-            )
-
-            def keep(_t):
-                try:
-                    if not button.isHighlighted():
-                        button.setHighlighted_(True)
-                except Exception:
-                    pass
-
-            timer = NSTimer.timerWithTimeInterval_repeats_block_(1.0 / 120.0, True, keep)
-            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
-            self._highlight_keeper_timer = timer
-        except Exception as exc:
-            print(f"[popover] highlight keeper failed: {exc!r}", file=sys.stderr)
-
-    def _stop_highlight_keeper(self) -> None:
-        timer = getattr(self, "_highlight_keeper_timer", None)
-        if timer is not None:
-            try:
-                timer.invalidate()
-            except Exception:
-                pass
-            self._highlight_keeper_timer = None
 
     def _on_popover_did_close(self) -> None:
         """NSPopoverDelegate hook — fires after the popover finishes closing."""

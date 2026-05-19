@@ -167,8 +167,69 @@ class TrayApp:
             self._icon.visible = True
         self._flag_macos_template_image()
         self._install_click_action()
+        self._install_selected_layer()
         self._install_badge_layer()
         self._start_health_timer()
+
+    def _install_selected_layer(self) -> None:
+        """Add a rounded-rect background CALayer behind the icon to render
+        the Selected state.
+
+        Why not just rely on NSStatusBarButton.setHighlighted_? On macOS
+        Tahoe the system-rendered highlight on status-bar buttons doesn't
+        reliably show in the same way it used to — our setHighlighted_
+        calls returned True via isHighlighted() but produced no visible
+        pressed appearance. A self-managed CALayer guarantees the
+        Selected state is visible regardless of what AppKit does with
+        the button's intrinsic highlight.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            from AppKit import NSColor  # type: ignore[import-not-found]
+            from Quartz import CALayer  # type: ignore[import-not-found]
+
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            button = status_item.button()
+            if button is None:
+                return
+            button.setWantsLayer_(True)
+            bounds = button.bounds()
+            try:
+                bw, bh = bounds.size.width, bounds.size.height
+            except AttributeError:
+                bw, bh = bounds[1][0], bounds[1][1]
+            sel = CALayer.layer()
+            sel.setFrame_(((1, 1), (bw - 2, bh - 2)))
+            sel.setCornerRadius_(4.0)
+            # Match the menu-bar selected fill: a system gray with
+            # moderate alpha. controlAccentColor() at alpha 0.4 is a
+            # close approximation across light/dark; on Tahoe the
+            # system uses a flatter gray, so opt for systemGrayColor
+            # with alpha as a more neutral choice.
+            sel.setBackgroundColor_(
+                NSColor.controlAccentColor().colorWithAlphaComponent_(0.30).CGColor()
+            )
+            sel.setHidden_(True)
+            # Index 0 → behind the icon image's layer.
+            button.layer().insertSublayer_atIndex_(sel, 0)
+            self._selected_layer = sel
+        except Exception as exc:
+            print(f"[tray] _install_selected_layer failed: {exc!r}", file=sys.stderr)
+
+    def set_selected(self, selected: bool) -> None:
+        """Show or hide the Selected indicator. Called by StatusPopover on
+        popover show / will-close."""
+        layer = getattr(self, "_selected_layer", None)
+        if layer is not None:
+            try:
+                layer.setHidden_(not selected)
+            except Exception:
+                pass
 
     def _install_click_action(self) -> None:
         """Wire the NSStatusItem button to open the popover on left-click.
@@ -212,42 +273,51 @@ class TrayApp:
             print(f"[tray] _install_click_action failed: {exc!r}", file=sys.stderr)
 
     def _flag_macos_template_image(self) -> None:
-        """Configure the menu-bar NSImage to match Apple's HIG.
+        """Configure the menu-bar NSImage.
 
-        Two PyObjC tweaks to pystray's macOS NSImage:
+        Prefer a vector PDF (menubar.pdf) when bundled — NSImage renders
+        PDFs as true vectors at any size — falling back to the raster PNG
+        otherwise. In both cases:
 
-        1. setTemplate_(YES) — tells macOS this is a template image, so it
-           handles light/dark/tinted-mode adaptation automatically.
-        2. setSize_((22, 22)) — sets the *logical* (point) size to match
-           Apple's menu-bar template-image convention (Sonoma → Tahoe).
-           pystray hands the raw PNG bytes to NSImage without setting a
-           logical size, so NSImage defaults to the pixel size (88pt for
-           our 88x88 PNG) — which renders much larger than neighboring
-           system icons. The 88px pixel resolution remains as 4x retina
-           detail behind the 22pt logical render.
+        - setTemplate_(YES) → macOS tints the glyph for light/dark/tinted.
+        - setSize_((22, 22)) → logical (point) size matches Apple's menu-
+          bar template-image convention.
 
         Must run AFTER pystray initializes the NSStatusItem (call from the
-        setup= callback to Icon.run()); calling earlier silently no-ops
-        because _status_item is still None.
+        setup= callback to Icon.run()); calling earlier silently no-ops.
         """
         import sys
 
         if sys.platform != "darwin" or self._icon is None:
             return
         try:
+            from pathlib import Path
+
+            from AppKit import NSImage  # type: ignore[import-not-found]
+
             status_item = getattr(self._icon, "_status_item", None)
             if status_item is None:
                 return
-            ns_image = status_item.button().image()
+            button = status_item.button()
+            if button is None:
+                return
+
+            here = Path(__file__).resolve().parent
+            pdf_path = here / "resources" / "menubar.pdf"
+            ns_image = None
+            if pdf_path.exists():
+                ns_image = NSImage.alloc().initWithContentsOfFile_(str(pdf_path))
+                if ns_image is not None:
+                    button.setImage_(ns_image)
+            if ns_image is None:
+                ns_image = button.image()
             if ns_image is not None:
                 ns_image.setTemplate_(True)
-                # PyObjC accepts a (w, h) tuple as an NSSize.
                 ns_image.setSize_((22, 22))
         except Exception:
-            # Patch is best-effort — if pystray's internals shifted, fall
-            # back to the un-flagged image. The launcher still works; the
-            # icon just doesn't auto-adapt to dark mode and may render at
-            # the wrong size.
+            # Best-effort — if the PDF/Image setup fails, fall back to the
+            # un-flagged image already on the button (still renders, just
+            # may not adapt to dark mode or have correct logical size).
             pass
 
     def _install_badge_layer(self) -> None:
