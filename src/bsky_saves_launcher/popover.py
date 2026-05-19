@@ -86,7 +86,7 @@ def _status_line(snapshot) -> str:
     if state is HelperState.UNRESPONSIVE:
         return "Unresponsive — helper not answering"
     if state is HelperState.PORT_CONFLICT:
-        return "Port conflict — another bsky-saves is bound to 47826"
+        return "Another bsky-saves is using port 47826"
     return str(state.value)
 
 

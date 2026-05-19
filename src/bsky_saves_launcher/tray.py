@@ -288,8 +288,11 @@ class TrayApp:
                 bw, bh = bounds[1][0], bounds[1][1]
             badge_size = 6.0
             margin = 1.0
+            # Pull the badge halfway into the icon so it overlaps the
+            # silhouette rather than floating off to the right.
+            overlap = badge_size / 2.0
             layer.setFrame_((
-                (bw - badge_size - margin, bh - badge_size - margin),
+                (bw - badge_size - margin - overlap, bh - badge_size - margin),
                 (badge_size, badge_size),
             ))
             layer.setCornerRadius_(badge_size / 2.0)
