@@ -395,17 +395,14 @@ _PyCallbackTarget = None  # lazy class, built on first popover construction
 
 def _install_highlight_runloop_observer(button, sticky_state):
     """Install a CFRunLoop observer that re-applies setHighlighted_(True)
-    on the button right before the runloop sleeps (and the display
-    flushes).
+    on every runloop activity while sticky-mode is on.
 
-    Why: NSStatusBarButton's cell sets highlighted=False on mouseUp AFTER
-    firing our action. NSTimer-based re-apply runs on a later runloop
-    iteration — after AppKit has already coalesced the False redraw —
-    producing a visible blink. A runloop observer in kCFRunLoopBeforeWaiting
-    mode fires after event processing finishes but before the runloop
-    sleeps, which is also before the display server picks up coalesced
-    dirty regions. Setting highlighted=True here puts True as the final
-    state at that flush.
+    Why all activities (rather than just kCFRunLoopBeforeWaiting): on
+    Tahoe a thin blink was still visible with the BeforeWaiting-only
+    observer — AppKit was apparently redrawing during a different phase
+    of the runloop (likely inside event-source processing). Observing
+    every activity gives us the best chance of re-asserting True
+    before each potential redraw.
 
     Returns the observer reference (caller must retain it).
     """
@@ -414,7 +411,7 @@ def _install_highlight_runloop_observer(button, sticky_state):
             CFRunLoopAddObserver,
             CFRunLoopGetMain,
             CFRunLoopObserverCreate,
-            kCFRunLoopBeforeWaiting,
+            kCFRunLoopAllActivities,
             kCFRunLoopCommonModes,
         )
     except Exception as exc:
@@ -432,12 +429,12 @@ def _install_highlight_runloop_observer(button, sticky_state):
 
     try:
         observer = CFRunLoopObserverCreate(
-            None,  # allocator
-            kCFRunLoopBeforeWaiting,  # activities
-            True,  # repeats
-            0,  # order
+            None,
+            kCFRunLoopAllActivities,
+            True,
+            0,
             callback,
-            None,  # context
+            None,
         )
         CFRunLoopAddObserver(CFRunLoopGetMain(), observer, kCFRunLoopCommonModes)
         return observer
@@ -517,6 +514,7 @@ class StatusPopover:
         self._popover_delegate = None
         self._highlight_observer = None
         self._highlight_sticky_state = {"on": False}
+        self._highlight_keeper_timer = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -573,6 +571,11 @@ class StatusPopover:
                     button, self._highlight_sticky_state
                 )
             self._highlight_sticky_state["on"] = True
+            # Start a 60Hz keeper timer so that every potential redraw
+            # frame is preceded by a setHighlighted_(True) — combined
+            # with the runloop observer this should cover every phase
+            # where AppKit might draw the cell's brief False state.
+            self._start_highlight_keeper_timer(button)
 
             try:
                 button.setHighlighted_(True)
@@ -929,6 +932,45 @@ class StatusPopover:
             self._timer.invalidate()
             self._timer = None
 
+    def _start_highlight_keeper_timer(self, button) -> None:
+        """60Hz NSTimer on NSRunLoopCommonModes that re-applies the
+        button's highlight while sticky-mode is on. Belt-and-braces with
+        the CFRunLoopObserver — covers any redraw boundary the observer
+        missed."""
+        from Foundation import (  # type: ignore[import-not-found]
+            NSRunLoop,
+            NSRunLoopCommonModes,
+            NSTimer,
+        )
+
+        existing = getattr(self, "_highlight_keeper_timer", None)
+        if existing is not None:
+            try:
+                existing.invalidate()
+            except Exception:
+                pass
+            self._highlight_keeper_timer = None
+
+        state = self._highlight_sticky_state
+
+        def keep(_t):
+            if not state["on"]:
+                return
+            try:
+                if not button.isHighlighted():
+                    button.setHighlighted_(True)
+            except Exception:
+                pass
+
+        try:
+            timer = NSTimer.timerWithTimeInterval_repeats_block_(
+                1.0 / 60.0, True, keep
+            )
+            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+            self._highlight_keeper_timer = timer
+        except Exception as exc:
+            print(f"[popover] keeper timer install failed: {exc!r}", file=sys.stderr)
+
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
@@ -937,6 +979,15 @@ class StatusPopover:
         animation, not after it.
         """
         self._highlight_sticky_state["on"] = False
+        # Stop the keeper timer immediately — otherwise it would race the
+        # close-animation un-highlight and snap the button back to True.
+        keeper = getattr(self, "_highlight_keeper_timer", None)
+        if keeper is not None:
+            try:
+                keeper.invalidate()
+            except Exception:
+                pass
+            self._highlight_keeper_timer = None
         if self._tray_button is not None:
             try:
                 self._tray_button.setHighlighted_(False)
