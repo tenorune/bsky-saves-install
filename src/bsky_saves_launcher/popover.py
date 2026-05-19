@@ -123,15 +123,54 @@ def _build_status_attributed(snapshot):
     return attr
 
 
-def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_out: list):
-    """Build the Default view's NSView tree and return the root + handles.
+def _make_link_button(title: str, on_click, targets_out: list):
+    """Create a borderless NSButton styled as a hyperlink.
 
-    Returns (root_view, status_label, copy_button, copy_button_default_title).
+    Visually distinct from the bezel-style action buttons so the user
+    reads it as a navigation control, not an action. Uses the system
+    `linkColor` and an underline on the title.
+    """
+    from AppKit import (  # type: ignore[import-not-found]
+        NSButton,
+        NSColor,
+        NSFont,
+        NSForegroundColorAttributeName,
+        NSUnderlineStyleAttributeName,
+    )
+    from Foundation import (  # type: ignore[import-not-found]
+        NSMakeRange,
+        NSMutableAttributedString,
+    )
 
-    targets_out: caller-owned list. Every _PyCallbackTarget instance we create
-    is appended here so the caller retains a strong reference. Without this,
-    Python releases the target the moment setTarget_ returns and the button's
-    action becomes a no-op (NSButton doesn't retain its target).
+    btn = NSButton.buttonWithTitle_target_action_(title, None, None)
+    btn.setBordered_(False)
+    btn.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    attr = NSMutableAttributedString.alloc().initWithString_(title)
+    full = NSMakeRange(0, len(title))
+    attr.addAttribute_value_range_(NSForegroundColorAttributeName, NSColor.linkColor(), full)
+    attr.addAttribute_value_range_(NSUnderlineStyleAttributeName, 1, full)
+    btn.setAttributedTitle_(attr)
+    target = _PyCallbackTarget.alloc().initWithCallable_(on_click)
+    targets_out.append(target)
+    btn.setTarget_(target)
+    btn.setAction_("invoke:")
+    return btn
+
+
+def _build_default_view(ak, on_open_gui, on_show_more, targets_out: list):
+    """Build the Default panel.
+
+    Layout (top to bottom):
+        Status (●  Running)
+        Open GUI button
+        [spacer pushing the link to the bottom]
+        ─ horizontal row ─
+        | <flex>             More → (link, right-aligned) |
+
+    Returns (root_view, status_label, _unused_, _unused_) — keeps the
+    signature shape from the previous version so the caller doesn't
+    need to be rewritten. The copy-token control moved to the More
+    panel in this revision.
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
@@ -139,25 +178,24 @@ def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_ou
         NSStackView,
         NSStackViewDistributionFill,
         NSTextField,
+        NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
+        NSView,
     )
 
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
-    stack.setSpacing_(8.0)
-    # Tight top inset so the status line sits near the top of the panel.
-    stack.setEdgeInsets_((6, 12, 12, 12))  # T L B R
+    # Reduced spacing — the user wanted less air between the status
+    # row and the Open GUI button.
+    stack.setSpacing_(4.0)
+    stack.setEdgeInsets_((6, 12, 8, 12))  # T L B R
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     stack.addArrangedSubview_(status_label)
 
-    open_gui_button = NSButton.buttonWithTitle_target_action_(
-        "Open GUI",
-        None,
-        None,
-    )
+    open_gui_button = NSButton.buttonWithTitle_target_action_("Open GUI", None, None)
     open_gui_button.setBezelStyle_(1)
     open_gui_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_gui)
     targets_out.append(open_gui_target)
@@ -165,34 +203,28 @@ def _build_default_view(ak, on_open_gui, on_copy_token, on_show_more, targets_ou
     open_gui_button.setAction_("invoke:")
     stack.addArrangedSubview_(open_gui_button)
 
-    copy_button = NSButton.buttonWithTitle_target_action_(
-        "Copy pairing token",
-        None,
-        None,
-    )
-    copy_button_default_title = "Copy pairing token"
-    copy_button.setBezelStyle_(1)  # NSBezelStyleRounded
-    copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
-    targets_out.append(copy_target)
-    copy_button.setTarget_(copy_target)
-    copy_button.setAction_("invoke:")
-    stack.addArrangedSubview_(copy_button)
+    # Bottom-right "More" navigation link inside a horizontal row with a
+    # flex spacer on the left so the link is pushed to the right edge.
+    more_row = NSStackView.alloc().init()
+    more_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    more_row.setSpacing_(0)
+    spacer = NSView.alloc().init()
+    more_row.addArrangedSubview_(spacer)
+    more_link = _make_link_button("More →", on_show_more, targets_out)
+    more_row.addArrangedSubview_(more_link)
+    stack.addArrangedSubview_(more_row)
 
-    more_button = NSButton.buttonWithTitle_target_action_(
-        "More…",
-        None,
-        None,
-    )
-    more_button.setBezelStyle_(1)
-    more_target = _PyCallbackTarget.alloc().initWithCallable_(on_show_more)
-    targets_out.append(more_target)
-    more_button.setTarget_(more_target)
-    more_button.setAction_("invoke:")
-    stack.addArrangedSubview_(more_button)
+    # Give a bit of breathing room above the More row.
+    try:
+        stack.setCustomSpacing_afterView_(10.0, open_gui_button)
+    except Exception:
+        pass
 
-    stack.setFrame_(((0, 0), (260, 160)))
+    stack.setFrame_(((0, 0), (260, 110)))
 
-    return stack, status_label, copy_button, copy_button_default_title
+    # Keep a stable return signature; copy_button + default_title slots
+    # are filled with None because copy moved to the More panel.
+    return stack, status_label, None, None
 
 
 def _build_more_view(
@@ -200,21 +232,28 @@ def _build_more_view(
     *,
     initial_start_at_login: bool,
     on_start_at_login_toggle,
+    on_copy_token,
     on_quit,
     on_back,
     targets_out: list,
 ):
-    """Build the More panel's NSView tree.
+    """Build the More panel.
 
-    Returns (root_view, start_at_login_switch, version_label).
-    targets_out: see _build_default_view docstring.
+    Layout (top to bottom):
+        ← Back (link, top-left)
+        Pairing Token:  [Copy]
+        ─── horizontal separator ───
+        Start at login           [switch]
+        [spacer]
+        Quit button
+        Version footer (two lines, centered)
 
-    Note: Show-in-Dock was removed in v0.3.x — macOS's recent-apps Dock
-    cache made the toggle unreliable (clicking the leftover Dock entry
-    revived the policy under the user). The launcher is now hardcoded
-    menu-bar-only via LSUIElement=true + setActivationPolicy_(Accessory).
+    Returns (root_view, start_at_login_switch, version_label, copy_button,
+    copy_button_default_title).
     """
     from AppKit import (  # type: ignore[import-not-found]
+        NSBox,
+        NSBoxSeparator,
         NSButton,
         NSControlStateValueOff,
         NSControlStateValueOn,
@@ -224,27 +263,59 @@ def _build_more_view(
         NSSwitch,
         NSTextAlignmentCenter,
         NSTextField,
+        NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
+        NSView,
     )
 
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
     stack.setSpacing_(8.0)
-    stack.setEdgeInsets_((12, 12, 12, 12))
+    stack.setEdgeInsets_((6, 12, 12, 12))
 
-    # Back arrow / title row
-    back_button = NSButton.buttonWithTitle_target_action_("← Back", None, None)
-    back_button.setBezelStyle_(1)
-    back_target = _PyCallbackTarget.alloc().initWithCallable_(on_back)
-    targets_out.append(back_target)
-    back_button.setTarget_(back_target)
-    back_button.setAction_("invoke:")
-    stack.addArrangedSubview_(back_button)
+    # Back link, top-left (flex spacer on the right pushes it left).
+    back_row = NSStackView.alloc().init()
+    back_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    back_row.setSpacing_(0)
+    back_link = _make_link_button("← Back", on_back, targets_out)
+    back_row.addArrangedSubview_(back_link)
+    back_spacer = NSView.alloc().init()
+    back_row.addArrangedSubview_(back_spacer)
+    stack.addArrangedSubview_(back_row)
 
-    # Start at login toggle
-    start_at_login_label = NSTextField.labelWithString_("Start at login")
-    stack.addArrangedSubview_(start_at_login_label)
+    # Pairing-token row: "Pairing Token:" label + [Copy] button.
+    pairing_row = NSStackView.alloc().init()
+    pairing_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    pairing_row.setSpacing_(8.0)
+    pairing_label = NSTextField.labelWithString_("Pairing Token:")
+    pairing_row.addArrangedSubview_(pairing_label)
+    copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
+    copy_button_default_title = "Copy"
+    copy_button.setBezelStyle_(1)
+    copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
+    targets_out.append(copy_target)
+    copy_button.setTarget_(copy_target)
+    copy_button.setAction_("invoke:")
+    pairing_row.addArrangedSubview_(copy_button)
+    pairing_spacer = NSView.alloc().init()
+    pairing_row.addArrangedSubview_(pairing_spacer)
+    stack.addArrangedSubview_(pairing_row)
+
+    # Horizontal separator below pairing row.
+    separator = NSBox.alloc().init()
+    separator.setBoxType_(NSBoxSeparator)
+    separator.setFrame_(((0, 0), (236, 1)))
+    stack.addArrangedSubview_(separator)
+
+    # Start-at-login row: label on the left, switch on the right.
+    sal_row = NSStackView.alloc().init()
+    sal_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    sal_row.setSpacing_(8.0)
+    sal_label = NSTextField.labelWithString_("Start at login")
+    sal_row.addArrangedSubview_(sal_label)
+    sal_spacer = NSView.alloc().init()
+    sal_row.addArrangedSubview_(sal_spacer)
     start_at_login_switch = NSSwitch.alloc().init()
     start_at_login_switch.setState_(
         NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
@@ -257,9 +328,15 @@ def _build_more_view(
     targets_out.append(start_at_login_target)
     start_at_login_switch.setTarget_(start_at_login_target)
     start_at_login_switch.setAction_("invoke:")
-    stack.addArrangedSubview_(start_at_login_switch)
+    sal_row.addArrangedSubview_(start_at_login_switch)
+    stack.addArrangedSubview_(sal_row)
 
-    # Quit
+    # Breathing room above Quit.
+    try:
+        stack.setCustomSpacing_afterView_(20.0, sal_row)
+    except Exception:
+        pass
+
     quit_button = NSButton.buttonWithTitle_target_action_("Quit", None, None)
     quit_button.setBezelStyle_(1)
     quit_target = _PyCallbackTarget.alloc().initWithCallable_(on_quit)
@@ -268,17 +345,11 @@ def _build_more_view(
     quit_button.setAction_("invoke:")
     stack.addArrangedSubview_(quit_button)
 
-    # Add visible breathing room between Quit and the version footer.
-    # setCustomSpacing_afterView_ overrides the default 8pt stack spacing
-    # for just this gap.
     try:
         stack.setCustomSpacing_afterView_(20.0, quit_button)
     except Exception:
         pass
 
-    # Version footer — two lines, small font, centered:
-    #   bsky-saves <ver>
-    #   GUI <ver> · Installer <ver>
     version_label = NSTextField.labelWithString_("…")
     version_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     version_label.setUsesSingleLineMode_(False)
@@ -286,9 +357,9 @@ def _build_more_view(
     version_label.setAlignment_(NSTextAlignmentCenter)
     stack.addArrangedSubview_(version_label)
 
-    stack.setFrame_(((0, 0), (260, 220)))
+    stack.setFrame_(((0, 0), (260, 230)))
 
-    return stack, start_at_login_switch, version_label
+    return stack, start_at_login_switch, version_label, copy_button, copy_button_default_title
 
 
 def _wrap_in_active_visual_effect(inner):
@@ -599,17 +670,17 @@ class StatusPopover:
         # here so the action selectors stay live across button clicks.
         self._button_targets = []
 
-        default_root, status_label, copy_button, copy_default_title = _build_default_view(
+        default_root, status_label, _unused1, _unused2 = _build_default_view(
             ak,
             on_open_gui=self._on_open_gui,
-            on_copy_token=self._on_copy_token,
             on_show_more=self._on_show_more,
             targets_out=self._button_targets,
         )
-        more_root, start_switch, version_label = _build_more_view(
+        more_root, start_switch, version_label, copy_button, copy_default_title = _build_more_view(
             ak,
             initial_start_at_login=prefs.start_at_login,
             on_start_at_login_toggle=self._on_start_at_login_toggle,
+            on_copy_token=self._on_copy_token,
             on_quit=self._on_quit,
             on_back=self._on_back_to_default,
             targets_out=self._button_targets,
