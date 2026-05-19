@@ -84,7 +84,7 @@ def _status_line(snapshot) -> str:
     if state is HelperState.STOPPED:
         return "Stopped"
     if state is HelperState.UNRESPONSIVE:
-        return "Unresponsive — helper not answering"
+        return "Helper not responding"
     if state is HelperState.PORT_CONFLICT:
         return "Another bsky-saves is using port 47826"
     return str(state.value)
@@ -335,6 +335,18 @@ def _wrap_in_active_visual_effect(inner):
     return vev
 
 
+def _view_size(view):
+    """Return the (width, height) of an NSView's frame, or None on failure."""
+    try:
+        frame = view.frame()
+        try:
+            return (frame.size.width, frame.size.height)
+        except AttributeError:
+            return (frame[1][0], frame[1][1])
+    except Exception:
+        return None
+
+
 def _format_versions(
     launcher_version: str, helper_version: str | None, gui_version: str | None
 ) -> str:
@@ -420,6 +432,8 @@ class StatusPopover:
         self._tray_icon_ref = tray_icon_ref
         self._popover = None  # NSPopover; constructed on first show
         self._content_controller = None
+        self._default_controller = None
+        self._more_controller = None
         self._timer = None
         self._helper_started: float | None = None
         self._last_ping_ok: float | None = None
@@ -460,24 +474,12 @@ class StatusPopover:
                 print("[popover] status_item.button() is None", file=sys.stderr)
                 return
             # Always start at the Default view. NSPopover keeps whichever
-            # NSView the content controller is pointing at across hide/show,
-            # so without this reset the popover would re-open on the More
-            # panel after the user navigated there in a previous round.
-            if self._content_controller is not None and self._default_view is not None:
-                self._content_controller.setView_(self._default_view)
-            # Resize the popover to match whichever view is currently active.
-            if self._content_controller is not None:
-                view = self._content_controller.view()
-                if view is not None:
-                    frame = view.frame()
-                    # frame.size is an NSSize tuple-ish (width, height); PyObjC
-                    # exposes .width and .height attributes too.
-                    try:
-                        size = (frame.size.width, frame.size.height)
-                    except AttributeError:
-                        size = (frame[1][0], frame[1][1])
-                    if size[0] > 0 and size[1] > 0:
-                        self._popover.setContentSize_(size)
+            # contentViewController was set across hide/show, so without
+            # this reset the popover would re-open on the More panel after
+            # the user navigated there in a previous round.
+            if self._default_controller is not None:
+                self._popover.setContentViewController_(self._default_controller)
+                self._content_controller = self._default_controller
             self._popover.showRelativeToRect_ofView_preferredEdge_(
                 button.bounds(),
                 button,
@@ -581,14 +583,31 @@ class StatusPopover:
         self._start_at_login_switch = start_switch
         self._version_label = version_label
 
-        controller = ak["NSViewController"].alloc().init()
-        controller.setView_(default_root)
-        self._content_controller = controller
+        # Two separate NSViewControllers — one per panel. Each carries its
+        # own preferredContentSize so NSPopover sizes itself correctly on
+        # every swap. The previous single-controller-with-setView_ approach
+        # left the popover stuck at whichever size the previous view had
+        # because setContentSize_ on an already-shown popover doesn't
+        # reliably shrink it on the macOS versions we target.
+        default_controller = ak["NSViewController"].alloc().init()
+        default_controller.setView_(default_root)
+        default_size = _view_size(default_root)
+        if default_size is not None:
+            default_controller.setPreferredContentSize_(default_size)
+        more_controller = ak["NSViewController"].alloc().init()
+        more_controller.setView_(more_root)
+        more_size = _view_size(more_root)
+        if more_size is not None:
+            more_controller.setPreferredContentSize_(more_size)
+        self._default_controller = default_controller
+        self._more_controller = more_controller
+        self._content_controller = default_controller
 
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
-        popover.setContentSize_((260, 120))  # initial size; show() updates on each open
-        popover.setContentViewController_(controller)
+        popover.setAnimates_(True)
+        popover.setContentSize_(default_size or (260, 120))
+        popover.setContentViewController_(default_controller)
         # Hide the popover's arrow. NSPopover doesn't expose a public API
         # for this, but the private KVC key `shouldHideAnchor` is honored
         # by AppKit and is the standard trick used in menu-bar apps that
@@ -671,57 +690,19 @@ class StatusPopover:
             _revert,
         )
 
-    def _resize_to_current_view(self) -> None:
-        """Resize the popover to match the current content controller view.
-
-        Called on each view swap (More/Back). Without it, the popover keeps
-        the size it had at first show, and the new view either sits inside
-        a too-tall popover (extra empty space below — what the user sees
-        after going Default → More → Back) or gets clipped.
-
-        NSPopover only reliably honors size changes when the view
-        controller's preferredContentSize changes — calling setContentSize_
-        on an already-shown popover is a no-op in some macOS versions.
-        Set both, and also force-resize the view itself so its subviews
-        re-lay out immediately.
-        """
-        if self._popover is None or self._content_controller is None:
-            return
-        view = self._content_controller.view()
-        if view is None:
-            return
-        frame = view.frame()
-        try:
-            size = (frame.size.width, frame.size.height)
-        except AttributeError:
-            size = (frame[1][0], frame[1][1])
-        if not (size[0] > 0 and size[1] > 0):
-            return
-        try:
-            self._content_controller.setPreferredContentSize_(size)
-        except Exception:
-            pass
-        try:
-            self._popover.setContentSize_(size)
-        except Exception:
-            pass
-        try:
-            view.setFrameSize_(size)
-        except Exception:
-            pass
-
     def _on_show_more(self) -> None:
-        """Swap the controller's view to the More panel."""
-        if self._content_controller is None or self._more_view is None:
+        """Swap to the More panel's view controller."""
+        if self._popover is None or self._more_controller is None:
             return
-        self._content_controller.setView_(self._more_view)
-        self._resize_to_current_view()
+        self._popover.setContentViewController_(self._more_controller)
+        self._content_controller = self._more_controller
 
     def _on_back_to_default(self) -> None:
-        if self._content_controller is None or self._default_view is None:
+        """Swap back to the Default panel's view controller."""
+        if self._popover is None or self._default_controller is None:
             return
-        self._content_controller.setView_(self._default_view)
-        self._resize_to_current_view()
+        self._popover.setContentViewController_(self._default_controller)
+        self._content_controller = self._default_controller
 
     def _on_start_at_login_toggle(self, enabled: bool) -> None:
         from bsky_saves_launcher.launchagent import (
