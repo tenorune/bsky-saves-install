@@ -322,6 +322,15 @@ def _wrap_in_active_visual_effect(inner):
     vev.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
     vev.setState_(NSVisualEffectStateActive)
     inner.setFrame_(((0, 0), size))
+    # Anchor the inner stack to the top of the VEV. If the popover ever
+    # renders us inside a window taller than our intrinsic size (e.g. a
+    # resize-on-back didn't fully take effect), this keeps the content
+    # pinned to the top rather than the bottom (Cocoa origin is
+    # bottom-left, so without MinYMargin extra height shows as a gap
+    # above the stack).
+    NSViewWidthSizable = 2
+    NSViewMinYMargin = 8
+    inner.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
     vev.addSubview_(inner)
     return vev
 
@@ -669,6 +678,12 @@ class StatusPopover:
         the size it had at first show, and the new view either sits inside
         a too-tall popover (extra empty space below — what the user sees
         after going Default → More → Back) or gets clipped.
+
+        NSPopover only reliably honors size changes when the view
+        controller's preferredContentSize changes — calling setContentSize_
+        on an already-shown popover is a no-op in some macOS versions.
+        Set both, and also force-resize the view itself so its subviews
+        re-lay out immediately.
         """
         if self._popover is None or self._content_controller is None:
             return
@@ -680,11 +695,20 @@ class StatusPopover:
             size = (frame.size.width, frame.size.height)
         except AttributeError:
             size = (frame[1][0], frame[1][1])
-        if size[0] > 0 and size[1] > 0:
-            try:
-                self._popover.setContentSize_(size)
-            except Exception:
-                pass
+        if not (size[0] > 0 and size[1] > 0):
+            return
+        try:
+            self._content_controller.setPreferredContentSize_(size)
+        except Exception:
+            pass
+        try:
+            self._popover.setContentSize_(size)
+        except Exception:
+            pass
+        try:
+            view.setFrameSize_(size)
+        except Exception:
+            pass
 
     def _on_show_more(self) -> None:
         """Swap the controller's view to the More panel."""
