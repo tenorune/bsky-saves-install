@@ -891,7 +891,6 @@ class StatusPopover:
         Un-highlight the tray button immediately so the pressed-state
         release lands at the start of the close animation, not after it.
         """
-        print("[popover] willClose fired", file=sys.stderr)
         if self._tray_button is not None:
             try:
                 self._tray_button.setHighlighted_(False)
