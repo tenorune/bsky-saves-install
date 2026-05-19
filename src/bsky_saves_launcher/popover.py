@@ -409,6 +409,14 @@ def _build_popover_delegate_class():
             self._owner_ref = owner
             return self
 
+        def popoverWillClose_(self, _notification):
+            # Release the tray-button highlight as soon as close starts, so
+            # the visual change is in sync with the user's click rather
+            # than lagging until the close animation finishes.
+            owner = getattr(self, "_owner_ref", None)
+            if owner is not None:
+                owner._on_popover_will_close()
+
         def popoverDidClose_(self, _notification):
             owner = getattr(self, "_owner_ref", None)
             if owner is not None:
@@ -503,8 +511,14 @@ class StatusPopover:
                     print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
 
             try:
+                # 0.0 schedules the highlight for the very next runloop
+                # turn — as soon as the current click event finishes and
+                # NSStatusBarButton's auto-unhighlight on mouseUp is over.
+                # The previous 0.05s delay added a visible "blink" between
+                # the system unhighlight and our re-highlight; firing at
+                # 0 closes that gap.
                 ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
-                    0.05, False, _apply_highlight
+                    0.0, False, _apply_highlight
                 )
             except Exception:
                 pass
@@ -691,18 +705,42 @@ class StatusPopover:
         )
 
     def _on_show_more(self) -> None:
-        """Swap to the More panel's view controller."""
+        """Swap to the More panel's view controller, animated."""
         if self._popover is None or self._more_controller is None:
             return
-        self._popover.setContentViewController_(self._more_controller)
+        self._animated_swap_controller(self._more_controller)
         self._content_controller = self._more_controller
 
     def _on_back_to_default(self) -> None:
-        """Swap back to the Default panel's view controller."""
+        """Swap back to the Default panel's view controller, animated."""
         if self._popover is None or self._default_controller is None:
             return
-        self._popover.setContentViewController_(self._default_controller)
+        self._animated_swap_controller(self._default_controller)
         self._content_controller = self._default_controller
+
+    def _animated_swap_controller(self, controller) -> None:
+        """Replace the popover's contentViewController with a slower-than-
+        default animation. NSPopover's built-in animate is ~0.25s; the
+        user asked for half-speed, so override via NSAnimationContext at
+        0.5s. The .animator() proxy routes the property change through
+        the animation system."""
+        try:
+            from AppKit import NSAnimationContext  # type: ignore[import-not-found]
+
+            NSAnimationContext.beginGrouping()
+            try:
+                ctx = NSAnimationContext.currentContext()
+                ctx.setDuration_(0.5)
+                self._popover.animator().setContentViewController_(controller)
+            finally:
+                NSAnimationContext.endGrouping()
+        except Exception:
+            # Fall back to a plain (non-animated) swap if the animation
+            # path isn't available for any reason.
+            try:
+                self._popover.setContentViewController_(controller)
+            except Exception:
+                pass
 
     def _on_start_at_login_toggle(self, enabled: bool) -> None:
         from bsky_saves_launcher.launchagent import (
@@ -733,17 +771,27 @@ class StatusPopover:
             self._timer.invalidate()
             self._timer = None
 
-    def _on_popover_did_close(self) -> None:
-        """NSPopoverDelegate hook — fires after the popover finishes closing."""
-        self._stop_refresh_timer()
+    def _on_popover_will_close(self) -> None:
+        """NSPopoverDelegate hook — fires at the start of the close.
+
+        Un-highlight the tray button immediately so the button's
+        pressed-state release is in sync with the user's click, rather
+        than waiting for the close animation to finish (which felt
+        sluggish).
+        """
         if self._tray_button is not None:
             try:
+                self._tray_button.setHighlighted_(False)
                 cell = self._tray_button.cell()
                 if cell is not None:
                     cell.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
+
+    def _on_popover_did_close(self) -> None:
+        """NSPopoverDelegate hook — fires after the popover finishes closing."""
+        self._stop_refresh_timer()
 
     def _pin_popover_frame_active(self) -> None:
         """Force the popover window's NSVisualEffectView(s) to state=Active.

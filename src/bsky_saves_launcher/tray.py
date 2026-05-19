@@ -288,9 +288,9 @@ class TrayApp:
                 bw, bh = bounds[1][0], bounds[1][1]
             badge_size = 6.0
             margin = 1.0
-            # Pull the badge almost a full badge-width into the icon so it
-            # visibly overlaps the silhouette.
-            overlap = badge_size
+            # Pull the badge a bit more than a full badge-width into the icon
+            # so it sits clearly over the silhouette rather than at the edge.
+            overlap = badge_size + 2.0
             layer.setFrame_((
                 (bw - badge_size - margin - overlap, bh - badge_size - margin),
                 (badge_size, badge_size),

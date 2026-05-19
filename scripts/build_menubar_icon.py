@@ -37,9 +37,6 @@ ROOT = Path(__file__).resolve().parent.parent
 SRC = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar-source.svg"
 DEST = ROOT / "src" / "bsky_saves_launcher" / "resources" / "menubar.png"
 
-# Render at higher resolution than the final canvas so the LANCZOS downsample
-# has detail to preserve. macOS will downscale further at runtime.
-RENDER_SIZE = 256
 # Final canvas pixel size. The launcher additionally sets the NSImage's
 # *logical* size to 22pt via PyObjC (see tray.py::_flag_macos_template_image),
 # matching Apple's menu-bar template-image convention. 88px = 22pt @ 4x retina.
@@ -48,6 +45,12 @@ CANVAS_SIZE = 88
 # the 22pt menu-bar slot (Apple HIG for template images, consistent from
 # Sonoma through Tahoe). 15% per side = glyph fills 70% of the slot ≈ 15.4pt.
 PADDING_RATIO = 0.15
+# Render the SVG at the final glyph pixel size directly. cairosvg's vector
+# rasterizer produces crisper anti-aliasing when it knows the target
+# resolution than a render-then-downsample chain does — the previous
+# 256→88 LANCZOS pass was the source of the slightly-fuzzy edges the
+# user noticed on the menu-bar icon.
+INNER_PX = int(round(CANVAS_SIZE * (1 - 2 * PADDING_RATIO)))
 
 
 def main() -> int:
@@ -55,11 +58,12 @@ def main() -> int:
         print(f"ERROR: {SRC} not found.")
         return 1
 
-    # 1. Render the SVG at high resolution.
+    # 1. Render the SVG directly at the target inner pixel size. cairosvg
+    # preserves the SVG's aspect ratio; the longer side hits INNER_PX.
     png_bytes = cairosvg.svg2png(
         bytestring=SRC.read_bytes(),
-        output_width=RENDER_SIZE,
-        output_height=RENDER_SIZE,
+        output_width=INNER_PX,
+        output_height=INNER_PX,
     )
     rendered = Image.open(io.BytesIO(png_bytes)).convert("RGBA")
 
@@ -73,25 +77,18 @@ def main() -> int:
     glyph = rendered.crop(bbox)
 
     # 3. Recolor to solid black, preserve the rendered alpha (no thresholding —
-    # smooth anti-aliased edges survive downsampling).
+    # smooth anti-aliased edges survive at the target rasterization size).
     alpha = glyph.getchannel("A")
     silhouette = Image.new("RGBA", glyph.size, (0, 0, 0, 0))
     silhouette.paste((0, 0, 0, 255), (0, 0), alpha)
 
-    # 4. Resize the cropped glyph to fit inside CANVAS_SIZE with safe-area
-    # padding. Maintain aspect ratio; longest side fills the inner box.
-    inner = int(CANVAS_SIZE * (1 - 2 * PADDING_RATIO))
-    glyph_w, glyph_h = silhouette.size
-    scale = inner / max(glyph_w, glyph_h)
-    new_w = max(1, int(round(glyph_w * scale)))
-    new_h = max(1, int(round(glyph_h * scale)))
-    resized = silhouette.resize((new_w, new_h), Image.LANCZOS)
-
-    # 5. Center on a transparent canvas.
+    # 4. Center on the final transparent canvas. The glyph is already at the
+    # correct rasterized size — no resize step needed.
     canvas = Image.new("RGBA", (CANVAS_SIZE, CANVAS_SIZE), (0, 0, 0, 0))
-    x = (CANVAS_SIZE - new_w) // 2
-    y = (CANVAS_SIZE - new_h) // 2
-    canvas.paste(resized, (x, y), resized)
+    gx, gy = silhouette.size
+    x = (CANVAS_SIZE - gx) // 2
+    y = (CANVAS_SIZE - gy) // 2
+    canvas.paste(silhouette, (x, y), silhouette)
 
     DEST.parent.mkdir(parents=True, exist_ok=True)
     canvas.save(DEST, "PNG")
