@@ -1,7 +1,8 @@
 """Menu-bar / system-tray icon for the launcher.
 
-Renders a pystray icon, wires up a minimal v0.1 menu (Open GUI, Quit), and
-exposes a callback hook for opening the status window on icon click.
+Renders a pystray icon, wires click-to-open-popover, and overlays a small
+colored state badge in the icon's bottom-right corner (green/yellow/red
+per HelperState — same color logic as the popover's status dot).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ if TYPE_CHECKING:
 from bsky_saves_launcher.supervisor import Supervisor
 
 LOCAL_GUI_URL = "http://127.0.0.1:47826/"
+HEALTH_TICK_SECONDS = 5.0
 
 # v0.1: each "Open GUI" click hands the URL to the default browser via
 # webbrowser.open, which opens a new tab. An AppleScript variant that focuses
@@ -89,6 +91,21 @@ def _make_icon_image(*, running: bool) -> Image.Image:  # noqa: ARG001 (running 
     return Image.open(path).convert("RGBA")
 
 
+def _status_badge_color(state):
+    """NSColor for the menu-bar badge dot — same green/yellow/red mapping
+    as the popover's status dot. Lazy AppKit import so this module imports
+    cleanly on non-macOS for tests."""
+    from AppKit import NSColor  # type: ignore[import-not-found]
+
+    from bsky_saves_launcher.health import HelperState
+
+    if state is HelperState.RUNNING:
+        return NSColor.systemGreenColor()
+    if state is HelperState.STARTING:
+        return NSColor.systemYellowColor()
+    return NSColor.systemRedColor()
+
+
 class TrayApp:
     """Owns the pystray icon and dispatches its menu items."""
 
@@ -97,10 +114,16 @@ class TrayApp:
         supervisor: Supervisor,
         *,
         on_open_status: Callable[[], None],
+        helper_started: float | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._on_open_status = on_open_status
+        self._helper_started = helper_started
+        self._last_ping_ok: float | None = None
         self._icon: pystray.Icon | None = None
+        self._badge_layer = None
+        self._health_timer = None
+        self._click_target = None
 
     def run(self) -> None:
         """Block on the pystray event loop. Must be called on the main thread."""
@@ -133,6 +156,8 @@ class TrayApp:
             self._icon.visible = True
         self._flag_macos_template_image()
         self._install_click_action()
+        self._install_badge_layer()
+        self._start_health_timer()
 
     def _install_click_action(self) -> None:
         """Wire the NSStatusItem button to open the popover on left-click.
@@ -213,6 +238,82 @@ class TrayApp:
             # icon just doesn't auto-adapt to dark mode and may render at
             # the wrong size.
             pass
+
+    def _install_badge_layer(self) -> None:
+        """Add a small colored CALayer to the status button's corner.
+
+        The silhouette stays a template image so macOS keeps adapting it
+        to light/dark/tinted appearances. The badge is a separate layer
+        drawn on top so it can carry color without losing the silhouette's
+        adaptive rendering — template-image semantics force the underlying
+        PNG to grayscale.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            from AppKit import NSColor  # type: ignore[import-not-found]
+            from Quartz import CAShapeLayer  # type: ignore[import-not-found]
+
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            button = status_item.button()
+            if button is None:
+                return
+            button.setWantsLayer_(True)
+            layer = CAShapeLayer.layer()
+            # 6pt circle in the bottom-right corner of the 22pt button.
+            layer.setFrame_(((15, 1), (6, 6)))
+            layer.setCornerRadius_(3.0)
+            layer.setBackgroundColor_(NSColor.systemGreenColor().CGColor())
+            button.layer().addSublayer_(layer)
+            self._badge_layer = layer
+        except Exception as exc:
+            print(f"[tray] _install_badge_layer failed: {exc!r}", file=sys.stderr)
+
+    def _start_health_timer(self) -> None:
+        """Poll helper health every HEALTH_TICK_SECONDS to update the badge."""
+        import sys
+
+        if sys.platform != "darwin":
+            return
+        try:
+            from Foundation import NSTimer  # type: ignore[import-not-found]
+
+            timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+                HEALTH_TICK_SECONDS,
+                True,
+                lambda _t: self._on_health_tick(),
+            )
+            self._health_timer = timer
+            # Kick once immediately so the badge isn't stuck on the green
+            # default for HEALTH_TICK_SECONDS at launch.
+            self._on_health_tick()
+        except Exception as exc:
+            print(f"[tray] _start_health_timer failed: {exc!r}", file=sys.stderr)
+
+    def _on_health_tick(self) -> None:
+        """Compute health, update badge color. Best-effort — never raises."""
+        import sys
+
+        if self._badge_layer is None:
+            return
+        try:
+            from bsky_saves_launcher.health import compute_health
+
+            snapshot = compute_health(
+                self._supervisor,
+                last_ping_ok=self._last_ping_ok,
+                helper_started=self._helper_started,
+            )
+            if snapshot.last_seen_ok is not None:
+                self._last_ping_ok = snapshot.last_seen_ok
+            color = _status_badge_color(snapshot.state)
+            self._badge_layer.setBackgroundColor_(color.CGColor())
+        except Exception as exc:
+            print(f"[tray] _on_health_tick failed: {exc!r}", file=sys.stderr)
 
     def icon_handle(self):
         """Return the underlying pystray.Icon (only valid after run() starts)."""

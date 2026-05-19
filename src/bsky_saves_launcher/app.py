@@ -255,8 +255,11 @@ def main() -> int:
             popover_holder["popover"].notify_helper_started()
         popover_holder["popover"].show()
 
+    import time
+
     supervisor.start()
-    tray = TrayApp(supervisor, on_open_status=_open_status)
+    helper_started = time.monotonic()
+    tray = TrayApp(supervisor, on_open_status=_open_status, helper_started=helper_started)
     tray.run()
     return 0
 
