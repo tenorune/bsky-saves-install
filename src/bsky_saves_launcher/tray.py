@@ -167,69 +167,8 @@ class TrayApp:
             self._icon.visible = True
         self._flag_macos_template_image()
         self._install_click_action()
-        self._install_selected_layer()
         self._install_badge_layer()
         self._start_health_timer()
-
-    def _install_selected_layer(self) -> None:
-        """Add a rounded-rect background CALayer behind the icon to render
-        the Selected state.
-
-        Why not just rely on NSStatusBarButton.setHighlighted_? On macOS
-        Tahoe the system-rendered highlight on status-bar buttons doesn't
-        reliably show in the same way it used to — our setHighlighted_
-        calls returned True via isHighlighted() but produced no visible
-        pressed appearance. A self-managed CALayer guarantees the
-        Selected state is visible regardless of what AppKit does with
-        the button's intrinsic highlight.
-        """
-        import sys
-
-        if sys.platform != "darwin" or self._icon is None:
-            return
-        try:
-            from AppKit import NSColor  # type: ignore[import-not-found]
-            from Quartz import CALayer  # type: ignore[import-not-found]
-
-            status_item = getattr(self._icon, "_status_item", None)
-            if status_item is None:
-                return
-            button = status_item.button()
-            if button is None:
-                return
-            button.setWantsLayer_(True)
-            bounds = button.bounds()
-            try:
-                bw, bh = bounds.size.width, bounds.size.height
-            except AttributeError:
-                bw, bh = bounds[1][0], bounds[1][1]
-            sel = CALayer.layer()
-            sel.setFrame_(((1, 1), (bw - 2, bh - 2)))
-            sel.setCornerRadius_(4.0)
-            # Match the menu-bar selected fill: a system gray with
-            # moderate alpha. controlAccentColor() at alpha 0.4 is a
-            # close approximation across light/dark; on Tahoe the
-            # system uses a flatter gray, so opt for systemGrayColor
-            # with alpha as a more neutral choice.
-            sel.setBackgroundColor_(
-                NSColor.controlAccentColor().colorWithAlphaComponent_(0.30).CGColor()
-            )
-            sel.setHidden_(True)
-            # Index 0 → behind the icon image's layer.
-            button.layer().insertSublayer_atIndex_(sel, 0)
-            self._selected_layer = sel
-        except Exception as exc:
-            print(f"[tray] _install_selected_layer failed: {exc!r}", file=sys.stderr)
-
-    def set_selected(self, selected: bool) -> None:
-        """Show or hide the Selected indicator. Called by StatusPopover on
-        popover show / will-close."""
-        layer = getattr(self, "_selected_layer", None)
-        if layer is not None:
-            try:
-                layer.setHidden_(not selected)
-            except Exception:
-                pass
 
     def _install_click_action(self) -> None:
         """Wire the NSStatusItem button to open the popover on left-click.

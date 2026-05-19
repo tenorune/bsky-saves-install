@@ -497,20 +497,29 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
-            # Mark the menu-bar button Selected while the popover is open.
-            # We show a CALayer-based selected background (owned by TrayApp)
-            # which doesn't depend on AppKit's intrinsic highlight — that
-            # was unreliable on Tahoe. setHighlighted_ is still set as a
-            # secondary cue for AppKit-aware tooling.
+            # Keep the menu-bar button visually pressed while the popover is
+            # open. NSStatusBarButton resets its highlight at mouseUp on the
+            # same click that triggered our action, so any synchronous
+            # setHighlighted_ would get undone. Schedule on the next
+            # runloop turn via NSTimer — the brief blink between system
+            # unhighlight and our re-apply is the tradeoff. This is the
+            # pre-404a783 behavior the user reported as best.
             self._tray_button = button
-            if self._tray is not None:
+
+            def _apply_highlight(_t):
                 try:
-                    self._tray.set_selected(True)
-                except Exception:
-                    pass
+                    button.setHighlighted_(True)
+                    cell = button.cell()
+                    if cell is not None:
+                        cell.setHighlighted_(True)
+                    button.setNeedsDisplay_(True)
+                except Exception as exc:
+                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+
             try:
-                button.setHighlighted_(True)
-                button.setNeedsDisplay_(True)
+                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
+                    0.05, False, _apply_highlight
+                )
             except Exception:
                 pass
             # Lock the popover window's appearance to the current system
@@ -713,15 +722,12 @@ class StatusPopover:
         """Swap the popover's contentViewController and animate the size
         change with a manual frame-stepped tween.
 
-        NSPopover.setContentViewController_ has an intrinsic cross-fade
-        between view controllers — that's the panel "blink". Snap-swap
-        the controller with animates=False (no fade), rewind contentSize
-        to the old size, then drive contentSize toward the new size in
-        small steps via a 60Hz NSTimer with an ease-in-out curve. This
-        produces a visible 0.5s resize animation that the popover's
-        built-in animator() proxy didn't deliver reliably on the macOS
-        versions we target.
+        Drive the new controller's preferredContentSize each frame —
+        NSPopover observes that property and resizes its window. Calling
+        popover.setContentSize_ directly was inconsistent on Tahoe; the
+        preferredContentSize path is the documented one.
         """
+        print("[popover] swap: entering _animated_swap_controller", file=sys.stderr)
         try:
             old_size = self._popover.contentSize()
             new_size = controller.preferredContentSize()
@@ -733,27 +739,36 @@ class StatusPopover:
                 new_w, new_h = new_size.width, new_size.height
             except AttributeError:
                 new_w, new_h = new_size[0], new_size[1]
+            print(
+                f"[popover] swap: old={old_w:.0f}x{old_h:.0f} "
+                f"new={new_w:.0f}x{new_h:.0f}",
+                file=sys.stderr,
+            )
 
-            # Snap-swap content with no cross-fade.
+            # Snap content swap (no cross-fade flash). Force the new
+            # controller's preferredContentSize to the OLD size so the
+            # popover doesn't snap to new_size before we can tween.
+            try:
+                controller.setPreferredContentSize_((old_w, old_h))
+            except Exception:
+                pass
             self._popover.setAnimates_(False)
             self._popover.setContentViewController_(controller)
-            self._popover.setContentSize_((old_w, old_h))
-            # Keep animates=False during the manual tween — if it's True,
-            # the popover may run its own internal animation on each
-            # setContentSize_ call, which interferes with our frame-by-
-            # frame steps and produces no visible motion. The tween
-            # completion restores it.
+            self._popover.setAnimates_(True)
 
-            self._start_size_tween(old_w, old_h, new_w, new_h, duration_s=0.5)
+            self._start_size_tween(controller, old_w, old_h, new_w, new_h, duration_s=0.5)
         except Exception as exc:
             print(f"[popover] animated swap failed: {exc!r}", file=sys.stderr)
+            import traceback
+
+            traceback.print_exc(file=sys.stderr)
             try:
                 self._popover.setContentViewController_(controller)
             except Exception:
                 pass
 
-    def _start_size_tween(self, ow, oh, nw, nh, *, duration_s: float) -> None:
-        """Drive popover.contentSize from (ow, oh) to (nw, nh) over duration."""
+    def _start_size_tween(self, controller, ow, oh, nw, nh, *, duration_s: float) -> None:
+        """Drive controller.preferredContentSize from (ow, oh) to (nw, nh)."""
         import math
 
         from Foundation import (  # type: ignore[import-not-found]
@@ -776,34 +791,31 @@ class StatusPopover:
         interval = duration_s / n_steps
         state = {"i": 0}
 
-        popover = self._popover
-
         def tick(t):
             state["i"] += 1
             progress = min(1.0, state["i"] / n_steps)
-            # ease-in-out via cosine — slow start, slow end.
             eased = 0.5 * (1.0 - math.cos(progress * math.pi))
             cw = ow + (nw - ow) * eased
             ch = oh + (nh - oh) * eased
             try:
-                popover.setContentSize_((cw, ch))
-            except Exception:
-                pass
+                controller.setPreferredContentSize_((cw, ch))
+            except Exception as exc:
+                print(f"[popover] tween tick failed: {exc!r}", file=sys.stderr)
+                try:
+                    t.invalidate()
+                except Exception:
+                    pass
+                return
             if state["i"] >= n_steps:
                 try:
                     t.invalidate()
                 except Exception:
                     pass
                 self._size_tween_timer = None
-                # Restore animates so future show/hide animations work.
-                try:
-                    popover.setAnimates_(True)
-                except Exception:
-                    pass
 
         print(
             f"[popover] tween {ow:.0f}x{oh:.0f} -> {nw:.0f}x{nh:.0f} "
-            f"over {duration_s}s ({n_steps} steps)",
+            f"over {duration_s}s ({n_steps} steps, interval={interval:.3f}s)",
             file=sys.stderr,
         )
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
@@ -842,18 +854,15 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Hide the selected indicator and clear the AppKit highlight right
-        away so the pressed-state release lands at the start of the close
-        animation, not after it.
+        Un-highlight the tray button immediately so the pressed-state
+        release lands at the start of the close animation, not after it.
         """
-        if self._tray is not None:
-            try:
-                self._tray.set_selected(False)
-            except Exception:
-                pass
         if self._tray_button is not None:
             try:
                 self._tray_button.setHighlighted_(False)
+                cell = self._tray_button.cell()
+                if cell is not None:
+                    cell.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
