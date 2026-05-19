@@ -134,7 +134,8 @@ class TrayApp:
         self._icon: pystray.Icon | None = None
         self._badge_layer = None
         self._health_timer = None
-        self._click_target = None
+        self._tray_button = None
+        self._click_monitor = None
 
     def run(self) -> None:
         """Block on the pystray event loop. Must be called on the main thread."""
@@ -171,43 +172,67 @@ class TrayApp:
         self._start_health_timer()
 
     def _install_click_action(self) -> None:
-        """Wire the NSStatusItem button to open the popover on left-click.
+        """Hijack the status item's click handling via an NSEvent local
+        monitor.
 
-        pystray sets its own button target/action in _darwin.Icon._create, but
-        since we passed no menu, that wiring fires the icon's default-item
-        callback (which doesn't exist for us). We override it here to call
-        on_open_status directly. The button target NSObject must be retained
-        on `self` — NSButton.setTarget_ doesn't retain its target, so without
-        the strong ref Python would GC it and the action would no-op.
+        Why not pystray's target/action wiring? With pystray's setTarget_
+        + setAction_, the cell's normal mouseDown→mouseUp tracking cycle
+        runs, and on mouseUp the cell un-highlights the button before
+        our re-apply can land — producing the brief Selected-state blink
+        we couldn't eliminate via any of NSTimer / KVO / cell isa-swap /
+        classAddMethods swizzle / CFRunLoopObserver / 60Hz keeper.
+
+        With NSEvent.addLocalMonitor we see the mouseDown *before* it
+        reaches the cell. We toggle the popover and set highlight=True
+        ourselves, then return None from the handler to consume the
+        event — the cell's tracking never starts, so it can't
+        auto-un-highlight on mouseUp. This is the technique used by
+        production menu-bar apps that want the system-default
+        highlighted appearance with a popover.
         """
         import sys
 
         if sys.platform != "darwin" or self._icon is None:
             return
         try:
-            import objc  # type: ignore[import-not-found]  # noqa: F401
-            from Foundation import NSObject  # type: ignore[import-not-found]
-
-            on_open_status = self._on_open_status
-
-            class _ClickTarget(NSObject):
-                def invoke_(self, _sender):
-                    try:
-                        on_open_status()
-                    except Exception as exc:
-                        import traceback
-
-                        print(f"[tray] popover open failed: {exc!r}", file=sys.stderr)
-                        traceback.print_exc(file=sys.stderr)
+            from AppKit import (  # type: ignore[import-not-found]
+                NSEvent,
+                NSEventMaskLeftMouseDown,
+            )
 
             status_item = getattr(self._icon, "_status_item", None)
             if status_item is None:
                 return
-            target = _ClickTarget.alloc().init()
-            self._click_target = target  # retain — see docstring
             button = status_item.button()
-            button.setTarget_(target)
-            button.setAction_("invoke:")
+            if button is None:
+                return
+            self._tray_button = button
+
+            on_open_status = self._on_open_status
+
+            def handler(event):
+                # Only handle events targeted at the status item's window.
+                try:
+                    if event.window() is None:
+                        return event
+                    if event.window() is not button.window():
+                        return event
+                except Exception:
+                    return event
+                # Toggle: open popover (or close, handled inside) + set
+                # the button highlight. Returning None consumes the
+                # event so the cell never enters its tracking cycle.
+                try:
+                    on_open_status()
+                    button.setHighlighted_(True)
+                except Exception as exc:
+                    print(f"[tray] click handler failed: {exc!r}", file=sys.stderr)
+                return None
+
+            monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                NSEventMaskLeftMouseDown, handler
+            )
+            self._click_monitor = monitor
         except Exception as exc:
             print(f"[tray] _install_click_action failed: {exc!r}", file=sys.stderr)
 

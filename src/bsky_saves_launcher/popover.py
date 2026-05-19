@@ -466,6 +466,32 @@ class StatusPopover:
 
         self._helper_started = time.monotonic()
 
+    def is_shown(self) -> bool:
+        """True if the popover is currently visible."""
+        if self._popover is None:
+            return False
+        try:
+            return bool(self._popover.isShown())
+        except Exception:
+            return False
+
+    def close(self) -> None:
+        """Explicitly close the popover, firing the delegate's
+        popoverWillClose_ → un-highlight chain."""
+        if self._popover is None:
+            return
+        try:
+            self._popover.performClose_(None)
+        except Exception:
+            pass
+
+    def toggle(self) -> None:
+        """Open if closed, close if open."""
+        if self.is_shown():
+            self.close()
+        else:
+            self.show()
+
     def show(self) -> None:
         """Show the popover anchored to the tray icon. Lazy-construct on first call."""
         if sys.platform != "darwin":
@@ -497,45 +523,14 @@ class StatusPopover:
                 button,
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
-            # Keep the menu-bar button visually pressed while the popover
-            # is open. NSStatusBarButton's cell un-highlights itself at
-            # mouseUp AFTER firing our action, so schedule the re-apply
-            # for the next runloop turn via NSTimer 0.05s. Brief visible
-            # blink between the system's un-highlight and our re-apply
-            # is the tradeoff — this is the pre-404a783 baseline.
-            #
-            # Things tried and discarded for fully eliminating the blink:
-            #  - synchronous setHighlighted_(True) in the action callback
-            #    (overwritten by the cell's later mouseUp un-highlight);
-            #  - state-driven cell config via setHighlightsBy_(0)
-            #    (no visible Selected state at all on Tahoe);
-            #  - KVO on the `highlighted` property
-            #    (property isn't KVO-compliant on Tahoe);
-            #  - isa-swap of the cell to a sticky subclass
-            #    (SIGSEGV on click — private cell class doesn't survive);
-            #  - classAddMethods swizzle of setHighlighted:
-            #    (doesn't actually replace the existing implementation
-            #    on Tahoe, and bare ObjC cells can't hold Python attrs);
-            #  - CFRunLoopObserver(kCFRunLoopBeforeWaiting | AllActivities)
-            #    + 60Hz keeper timer (reduced but didn't eliminate blink).
+            # The tray's NSEvent local monitor already set the button's
+            # highlight to True before delegating here. Because that
+            # monitor consumes the mouseDown, the cell's tracking
+            # cycle never runs and there's no auto-un-highlight on
+            # mouseUp — so we don't need any NSTimer/observer re-apply
+            # ceremony. Just record the button reference for the
+            # popoverWillClose_ un-highlight.
             self._tray_button = button
-
-            def _apply_highlight(_t):
-                try:
-                    button.setHighlighted_(True)
-                    cell = button.cell()
-                    if cell is not None:
-                        cell.setHighlighted_(True)
-                    button.setNeedsDisplay_(True)
-                except Exception as exc:
-                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
-
-            try:
-                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
-                    0.05, False, _apply_highlight
-                )
-            except Exception:
-                pass
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance

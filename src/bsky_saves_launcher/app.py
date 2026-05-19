@@ -255,7 +255,11 @@ def main() -> int:
                 supervisor, tray.icon_handle(), tray=tray
             )
             popover_holder["popover"].notify_helper_started()
-        popover_holder["popover"].show()
+        # Toggle behavior — our NSEvent monitor consumes the click, so
+        # the popover's transient-close-on-click-outside doesn't fire
+        # when the user clicks the tray icon to dismiss the popover.
+        # Handle dismissal explicitly here.
+        popover_holder["popover"].toggle()
 
     import time
 
