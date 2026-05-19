@@ -518,6 +518,18 @@ class StatusPopover:
             if self._default_controller is not None:
                 self._popover.setContentViewController_(self._default_controller)
                 self._content_controller = self._default_controller
+            # Activate our app before showing the popover. We're
+            # LSUIElement (background-only), so without this the app
+            # never becomes "active" — and NSPopover.transient relies on
+            # the app being active to detect click-outside and auto-
+            # close. Without activate, the popover stays open after the
+            # user clicks elsewhere.
+            try:
+                from AppKit import NSApp  # type: ignore[import-not-found]
+
+                NSApp.activateIgnoringOtherApps_(True)
+            except Exception:
+                pass
             self._popover.showRelativeToRect_ofView_preferredEdge_(
                 button.bounds(),
                 button,

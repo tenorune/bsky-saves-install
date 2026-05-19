@@ -219,12 +219,15 @@ class TrayApp:
                         return event
                 except Exception:
                     return event
-                # Toggle: open popover (or close, handled inside) + set
-                # the button highlight. Returning None consumes the
-                # event so the cell never enters its tracking cycle.
+                # Set the highlight BEFORE delegating to on_open_status
+                # so that on the close path (popoverWillClose_ fires
+                # inside the toggle and un-highlights), the un-highlight
+                # is the last write and wins. Setting highlight after
+                # would re-highlight a just-closed popover and leave
+                # the button stuck on.
                 try:
-                    on_open_status()
                     button.setHighlighted_(True)
+                    on_open_status()
                 except Exception as exc:
                     print(f"[tray] click handler failed: {exc!r}", file=sys.stderr)
                 return None
