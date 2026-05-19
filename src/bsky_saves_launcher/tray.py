@@ -92,18 +92,29 @@ def _make_icon_image(*, running: bool) -> Image.Image:  # noqa: ARG001 (running 
 
 
 def _status_badge_color(state):
-    """NSColor for the menu-bar badge dot — same green/yellow/red mapping
-    as the popover's status dot. Lazy AppKit import so this module imports
-    cleanly on non-macOS for tests."""
+    """NSColor for the menu-bar badge dot. Only red is surfaced — green and
+    yellow correspond to healthy / transient-starting and are hidden via
+    _state_should_show_badge below. Lazy AppKit import so this module
+    imports cleanly on non-macOS for tests."""
     from AppKit import NSColor  # type: ignore[import-not-found]
 
+    return NSColor.systemRedColor()
+
+
+def _state_should_show_badge(state) -> bool:
+    """True when the menu-bar badge should be visible.
+
+    Only failure-mode states surface a badge — RUNNING and STARTING don't
+    draw user attention to the menu bar. STOPPED / UNRESPONSIVE /
+    PORT_CONFLICT all warrant a red dot.
+    """
     from bsky_saves_launcher.health import HelperState
 
-    if state is HelperState.RUNNING:
-        return NSColor.systemGreenColor()
-    if state is HelperState.STARTING:
-        return NSColor.systemYellowColor()
-    return NSColor.systemRedColor()
+    return state in {
+        HelperState.STOPPED,
+        HelperState.UNRESPONSIVE,
+        HelperState.PORT_CONFLICT,
+    }
 
 
 class TrayApp:
@@ -267,35 +278,53 @@ class TrayApp:
             # 6pt circle in the bottom-right corner of the 22pt button.
             layer.setFrame_(((15, 1), (6, 6)))
             layer.setCornerRadius_(3.0)
-            layer.setBackgroundColor_(NSColor.systemGreenColor().CGColor())
+            layer.setBackgroundColor_(NSColor.systemRedColor().CGColor())
+            layer.setHidden_(True)  # start hidden; tick reveals on red state
             button.layer().addSublayer_(layer)
             self._badge_layer = layer
         except Exception as exc:
             print(f"[tray] _install_badge_layer failed: {exc!r}", file=sys.stderr)
 
     def _start_health_timer(self) -> None:
-        """Poll helper health every HEALTH_TICK_SECONDS to update the badge."""
+        """Poll helper health every HEALTH_TICK_SECONDS to update the badge.
+
+        Add the timer to the main run loop in NSRunLoopCommonModes so it
+        fires regardless of which run-loop mode pystray's event pump is
+        currently in. The plain scheduledTimer convenience installs into
+        the default mode only, which is why a timer that ticked once at
+        startup was never firing again under pystray's loop.
+        """
         import sys
 
         if sys.platform != "darwin":
             return
         try:
-            from Foundation import NSTimer  # type: ignore[import-not-found]
+            from Foundation import (  # type: ignore[import-not-found]
+                NSRunLoop,
+                NSRunLoopCommonModes,
+                NSTimer,
+            )
 
-            timer = NSTimer.scheduledTimerWithTimeInterval_repeats_block_(
+            timer = NSTimer.timerWithTimeInterval_repeats_block_(
                 HEALTH_TICK_SECONDS,
                 True,
                 lambda _t: self._on_health_tick(),
             )
+            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
             self._health_timer = timer
-            # Kick once immediately so the badge isn't stuck on the green
-            # default for HEALTH_TICK_SECONDS at launch.
+            # Kick once immediately so we don't wait HEALTH_TICK_SECONDS to
+            # learn the helper state on launch.
             self._on_health_tick()
         except Exception as exc:
             print(f"[tray] _start_health_timer failed: {exc!r}", file=sys.stderr)
 
     def _on_health_tick(self) -> None:
-        """Compute health, update badge color. Best-effort — never raises."""
+        """Compute health and toggle the badge.
+
+        Only failure-mode states surface a (red) badge. Healthy and
+        transient-starting states keep the badge hidden — the user only
+        wants the menu bar to draw attention when something is wrong.
+        """
         import sys
 
         if self._badge_layer is None:
@@ -310,8 +339,12 @@ class TrayApp:
             )
             if snapshot.last_seen_ok is not None:
                 self._last_ping_ok = snapshot.last_seen_ok
-            color = _status_badge_color(snapshot.state)
-            self._badge_layer.setBackgroundColor_(color.CGColor())
+            show = _state_should_show_badge(snapshot.state)
+            self._badge_layer.setHidden_(not show)
+            if show:
+                self._badge_layer.setBackgroundColor_(
+                    _status_badge_color(snapshot.state).CGColor()
+                )
         except Exception as exc:
             print(f"[tray] _on_health_tick failed: {exc!r}", file=sys.stderr)
 
