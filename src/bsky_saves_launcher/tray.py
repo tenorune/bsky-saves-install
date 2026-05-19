@@ -275,9 +275,24 @@ class TrayApp:
                 return
             button.setWantsLayer_(True)
             layer = CAShapeLayer.layer()
-            # 6pt circle in the bottom-right corner of the 22pt button.
-            layer.setFrame_(((15, 1), (6, 6)))
-            layer.setCornerRadius_(3.0)
+            # Position the 6pt dot at the bottom-right corner of the
+            # button. NSStatusBarButton's layer uses flipped geometry
+            # (origin top-left), so "bottom" means high Y. Read bounds
+            # rather than hardcoding so we adapt to whatever width macOS
+            # gives the status item (varies a few points by macOS
+            # version / status-bar layout).
+            bounds = button.bounds()
+            try:
+                bw, bh = bounds.size.width, bounds.size.height
+            except AttributeError:
+                bw, bh = bounds[1][0], bounds[1][1]
+            badge_size = 6.0
+            margin = 1.0
+            layer.setFrame_((
+                (bw - badge_size - margin, bh - badge_size - margin),
+                (badge_size, badge_size),
+            ))
+            layer.setCornerRadius_(badge_size / 2.0)
             layer.setBackgroundColor_(NSColor.systemRedColor().CGColor())
             layer.setHidden_(True)  # start hidden; tick reveals on red state
             button.layer().addSublayer_(layer)
