@@ -393,47 +393,48 @@ def _build_callback_target_class():
 _PyCallbackTarget = None  # lazy class, built on first popover construction
 
 
-def _build_sticky_highlight_observer_class():
-    """NSObject KVO observer that re-applies setHighlighted_(True) any time
-    AppKit clears the tray button's highlight while sticky-mode is on.
+def _install_sticky_cell(button) -> bool:
+    """Subclass the status button's cell and swap its isa to a version that
+    ignores setHighlighted_(False) while a sticky flag is set.
 
-    KVO notifications fire synchronously inside setHighlighted_, so the
-    system's mouseUp un-highlight is reversed within the same runloop
-    iteration — no visible "off" gap between system unhighlight and our
-    re-apply.
+    Returns True if the swap succeeded — caller then sets/clears
+    `cell._bsky_sticky_on` to control the behavior. Returns False if any
+    step fails; caller can fall back to the NSTimer 0.05s re-apply
+    pattern (visible-blink-on-open).
+
+    Why subclass the cell at all? NSStatusBarButton's cell un-highlights
+    the button at mouseUp (inside cell.stopTracking) — that's the
+    "off" frame between the system's mouseDown highlight and our
+    re-apply when opening the popover. By intercepting setHighlighted_
+    on the cell itself, the system unhighlight becomes a no-op while
+    we want the button to stay pressed.
     """
     import objc  # type: ignore[import-not-found]
-    from Foundation import NSObject  # type: ignore[import-not-found]
 
-    class _HighlightStickyObserver(NSObject):
-        def initWithButton_(self, btn):
-            self = objc.super(_HighlightStickyObserver, self).init()
-            if self is None:
-                return None
-            self._btn = btn
-            self._enabled = False
-            return self
+    try:
+        cell = button.cell()
+        if cell is None:
+            return False
+        existing_class = type(cell)
 
-        def setEnabled_(self, flag):
-            self._enabled = bool(flag)
-            try:
-                self._btn.setHighlighted_(self._enabled)
-                self._btn.setNeedsDisplay_(True)
-            except Exception:
-                pass
+        class _StickyStatusBarButtonCell(existing_class):
+            def setHighlighted_(self, flag):
+                # While sticky, ignore attempts to clear the highlight.
+                if getattr(self, "_bsky_sticky_on", False) and not flag:
+                    return
+                objc.super(_StickyStatusBarButtonCell, self).setHighlighted_(flag)
 
-        def observeValueForKeyPath_ofObject_change_context_(
-            self, _keyPath, obj, _change, _ctx
-        ):
-            if not self._enabled:
-                return
-            try:
-                if not obj.isHighlighted():
-                    obj.setHighlighted_(True)
-            except Exception:
-                pass
+        # Swap the instance's class. PyObjC instances support reassigning
+        # __class__ to a PyObjC-registered subclass via the underlying
+        # object_setClass() runtime call.
+        cell.__class__ = _StickyStatusBarButtonCell
+        cell._bsky_sticky_on = False
+        return True
+    except Exception as exc:
+        import sys
 
-    return _HighlightStickyObserver
+        print(f"[popover] sticky cell install failed: {exc!r}", file=sys.stderr)
+        return False
 
 
 def _build_popover_delegate_class():
@@ -502,7 +503,7 @@ class StatusPopover:
         self._version_label = None
         self._tray_button = None
         self._popover_delegate = None
-        self._sticky_highlight_observer = None
+        self._sticky_cell_installed = False
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -542,16 +543,48 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Keep the menu-bar button visually pressed while the popover is
-            # open. The system briefly un-highlights at mouseUp; we use a
-            # KVO observer that re-applies setHighlighted_(True)
-            # synchronously inside the same observeValueForKeyPath_
-            # callback, so there's no visible "off" gap between system
-            # unhighlight and our re-apply.
+            # open. Two-layer strategy:
+            #   1. Subclass-swap the cell once so its setHighlighted_(False)
+            #      is a no-op while sticky-mode is on. The cell's own
+            #      mouseUp un-highlight is then suppressed at the source —
+            #      no visible "off" between system unhighlight and our
+            #      re-apply, which produces a flicker-free open.
+            #   2. NSTimer 0.05s re-apply as fallback when the cell swap
+            #      can't be installed (e.g. private cell class refuses
+            #      isa-swap on the macOS we're running on).
             self._tray_button = button
-            self._install_sticky_highlight_observer(button)
-            if self._sticky_highlight_observer is not None:
+            if not self._sticky_cell_installed:
+                self._sticky_cell_installed = _install_sticky_cell(button)
+            cell = button.cell()
+            if cell is not None and self._sticky_cell_installed:
                 try:
-                    self._sticky_highlight_observer.setEnabled_(True)
+                    cell._bsky_sticky_on = True
+                except Exception:
+                    pass
+            try:
+                button.setHighlighted_(True)
+                if cell is not None:
+                    cell.setHighlighted_(True)
+                button.setNeedsDisplay_(True)
+            except Exception:
+                pass
+
+            # Fallback re-apply via NSTimer if the cell swap didn't take.
+            if not self._sticky_cell_installed:
+                def _apply_highlight(_t):
+                    try:
+                        button.setHighlighted_(True)
+                        c = button.cell()
+                        if c is not None:
+                            c.setHighlighted_(True)
+                        button.setNeedsDisplay_(True)
+                    except Exception:
+                        pass
+
+                try:
+                    ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
+                        0.05, False, _apply_highlight
+                    )
                 except Exception:
                     pass
             # Lock the popover window's appearance to the current system
@@ -788,7 +821,7 @@ class StatusPopover:
             self._popover.setContentViewController_(controller)
             self._popover.setAnimates_(True)
 
-            self._start_size_tween(controller, old_w, old_h, new_w, new_h, duration_s=0.25)
+            self._start_size_tween(controller, old_w, old_h, new_w, new_h, duration_s=0.083)
         except Exception as exc:
             print(f"[popover] animated swap failed: {exc!r}", file=sys.stderr)
             import traceback
@@ -886,38 +919,21 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Disable sticky highlight + clear the highlight immediately so the
-        pressed-state release lands at the start of the close animation.
+        Clear the sticky flag and un-highlight the tray button immediately
+        so the pressed-state release lands at the start of the close
+        animation, not after it.
         """
-        if self._sticky_highlight_observer is not None:
-            try:
-                self._sticky_highlight_observer.setEnabled_(False)
-            except Exception:
-                pass
         if self._tray_button is not None:
             try:
+                cell = self._tray_button.cell()
+                if cell is not None:
+                    cell._bsky_sticky_on = False
                 self._tray_button.setHighlighted_(False)
+                if cell is not None:
+                    cell.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
-
-    def _install_sticky_highlight_observer(self, button) -> None:
-        """One-time install: attach a KVO observer on the button's
-        `highlighted` property. Subsequent shows just toggle setEnabled_."""
-        if self._sticky_highlight_observer is not None:
-            return
-        try:
-            observer_class = _build_sticky_highlight_observer_class()
-            observer = observer_class.alloc().initWithButton_(button)
-            button.addObserver_forKeyPath_options_context_(
-                observer, "highlighted", 0, None
-            )
-            self._sticky_highlight_observer = observer
-        except Exception as exc:
-            print(
-                f"[popover] sticky-highlight KVO install failed: {exc!r}",
-                file=sys.stderr,
-            )
 
     def _on_popover_did_close(self) -> None:
         """NSPopoverDelegate hook — fires after the popover finishes closing."""
