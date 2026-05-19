@@ -393,6 +393,53 @@ def _build_callback_target_class():
 _PyCallbackTarget = None  # lazy class, built on first popover construction
 
 
+def _install_cell_swizzle(button) -> bool:
+    """Swizzle setHighlighted: on the tray button's cell class so it no-ops
+    when our sticky flag is set. Returns True on success.
+
+    The previous attempt to swap the cell instance's class crashed on
+    Tahoe — the private NSStatusBarButtonCell-like class doesn't survive
+    object_setClass. classAddMethods (ObjC class_addMethod) is safer:
+    it replaces the method *on the class* without touching any
+    instance's isa pointer, so existing instances continue to work.
+
+    The replacement closes over the original setHighlighted_ method and
+    delegates to it unless self._bsky_sticky_on is True and the new
+    value is False (which is the system's mouseUp un-highlight).
+    """
+    import objc  # type: ignore[import-not-found]
+
+    try:
+        cell = button.cell()
+        if cell is None:
+            return False
+        cls = type(cell)
+        # Save the original implementation we'll be replacing. PyObjC
+        # bound methods can be called like normal Python functions on an
+        # instance — used as the super-style call inside the swizzle.
+        original = cls.setHighlighted_
+
+        def swizzled(self, flag):
+            if getattr(self, "_bsky_sticky_on", False) and not flag:
+                return
+            original(self, flag)
+
+        # PyObjC: wrap with objc.selector so it has the right ObjC name
+        # + type signature. setHighlighted: signature is v@:B (void,
+        # id self, SEL _cmd, BOOL flag). Using `B` for unsigned BOOL
+        # matches modern Cocoa.
+        method = objc.selector(swizzled, selector=b"setHighlighted:", signature=b"v@:B")
+        objc.classAddMethods(cls, [method])
+
+        cell._bsky_sticky_on = False
+        return True
+    except Exception as exc:
+        import sys
+
+        print(f"[popover] cell swizzle failed: {exc!r}", file=sys.stderr)
+        return False
+
+
 def _build_popover_delegate_class():
     """NSPopoverDelegate that notifies the StatusPopover owner on close.
 
@@ -459,6 +506,7 @@ class StatusPopover:
         self._version_label = None
         self._tray_button = None
         self._popover_delegate = None
+        self._cell_swizzle_installed = False
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -498,31 +546,50 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Keep the menu-bar button visually pressed while the popover
-            # is open. NSStatusBarButton's cell un-highlights itself
-            # AFTER firing our action on mouseUp, so a synchronous
-            # setHighlighted_(True) inside this callback gets overwritten
-            # — empirically verified on Tahoe (no visible Selected state).
-            # Schedule the re-apply for the next runloop turn via
-            # NSTimer 0.05s; brief blink between system unhighlight and
-            # our re-apply is the tradeoff.
+            # is open. Two-step strategy:
+            #   1. Swizzle setHighlighted: on the cell's class once so
+            #      its False writes become no-ops while sticky-mode is
+            #      on. This suppresses the system's mouseUp un-highlight
+            #      at the source, eliminating the open-click blink.
+            #   2. NSTimer 0.05s re-apply as fallback if swizzling
+            #      fails to install (still works, but with the visible
+            #      open-click blink).
             self._tray_button = button
+            if not self._cell_swizzle_installed:
+                self._cell_swizzle_installed = _install_cell_swizzle(button)
 
-            def _apply_highlight(_t):
+            cell = button.cell()
+            if cell is not None and self._cell_swizzle_installed:
                 try:
-                    button.setHighlighted_(True)
-                    cell = button.cell()
-                    if cell is not None:
-                        cell.setHighlighted_(True)
-                    button.setNeedsDisplay_(True)
-                except Exception as exc:
-                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+                    cell._bsky_sticky_on = True
+                except Exception:
+                    pass
 
             try:
-                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
-                    0.05, False, _apply_highlight
-                )
+                button.setHighlighted_(True)
+                if cell is not None:
+                    cell.setHighlighted_(True)
+                button.setNeedsDisplay_(True)
             except Exception:
                 pass
+
+            if not self._cell_swizzle_installed:
+                def _apply_highlight(_t):
+                    try:
+                        button.setHighlighted_(True)
+                        c = button.cell()
+                        if c is not None:
+                            c.setHighlighted_(True)
+                        button.setNeedsDisplay_(True)
+                    except Exception as exc:
+                        print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
+
+                try:
+                    ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
+                        0.05, False, _apply_highlight
+                    )
+                except Exception:
+                    pass
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance
@@ -855,15 +922,17 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Un-highlight the tray button immediately so the pressed-state
-        release lands at the start of the close animation, not after it.
+        Clear sticky-mode and un-highlight the tray button immediately
+        so the pressed-state release lands at the start of the close
+        animation, not after it.
         """
         if self._tray_button is not None:
             try:
-                self._tray_button.setHighlighted_(False)
                 cell = self._tray_button.cell()
                 if cell is not None:
+                    cell._bsky_sticky_on = False
                     cell.setHighlighted_(False)
+                self._tray_button.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
