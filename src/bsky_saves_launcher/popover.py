@@ -498,34 +498,24 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Keep the menu-bar button visually pressed while the popover
-            # is open. NSStatusBarButton resets its highlight at mouseUp
-            # on the same click that triggered our action, so schedule
-            # the re-apply for the next runloop turn via NSTimer 0.05s.
-            # There's a brief visible blink between the system's
-            # mouseUp un-highlight and our re-apply — this is the
-            # pre-404a783 behavior the user confirmed as best. A
-            # previously-attempted cell isa-swap to suppress the system
-            # un-highlight at its source crashed on macOS Tahoe because
-            # NSStatusBarButton's private cell class doesn't survive
-            # an isa swap.
+            # is open. Set the highlight SYNCHRONOUSLY inside this action
+            # callback. The cell's mouseUp tracking calls
+            # setHighlighted_(False) just before it fires our action, so
+            # our setHighlighted_(True) here is the last write before the
+            # event-loop redraw — the user sees no visible un-highlight.
+            # NSTimer (even at 0.0) was pushing the re-apply to the *next*
+            # runloop turn, after AppKit had already redrawn with the
+            # system's False — that was the open-click blink we couldn't
+            # eliminate via timer-based re-apply.
             self._tray_button = button
-
-            def _apply_highlight(_t):
-                try:
-                    button.setHighlighted_(True)
-                    cell = button.cell()
-                    if cell is not None:
-                        cell.setHighlighted_(True)
-                    button.setNeedsDisplay_(True)
-                except Exception as exc:
-                    print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
-
             try:
-                ak["NSTimer"].scheduledTimerWithTimeInterval_repeats_block_(
-                    0.05, False, _apply_highlight
-                )
-            except Exception:
-                pass
+                button.setHighlighted_(True)
+                cell = button.cell()
+                if cell is not None:
+                    cell.setHighlighted_(True)
+                button.setNeedsDisplay_(True)
+            except Exception as exc:
+                print(f"[popover] highlight failed: {exc!r}", file=sys.stderr)
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance
