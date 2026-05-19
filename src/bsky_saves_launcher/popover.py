@@ -222,6 +222,7 @@ def _build_more_view(
         NSStackView,
         NSStackViewDistributionFill,
         NSSwitch,
+        NSTextAlignmentCenter,
         NSTextField,
         NSUserInterfaceLayoutOrientationVertical,
     )
@@ -275,13 +276,14 @@ def _build_more_view(
     except Exception:
         pass
 
-    # Version footer — two lines, small font:
+    # Version footer — two lines, small font, centered:
     #   bsky-saves <ver>
     #   GUI <ver> · Installer <ver>
     version_label = NSTextField.labelWithString_("…")
     version_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     version_label.setUsesSingleLineMode_(False)
     version_label.setMaximumNumberOfLines_(2)
+    version_label.setAlignment_(NSTextAlignmentCenter)
     stack.addArrangedSubview_(version_label)
 
     stack.setFrame_(((0, 0), (260, 220)))
@@ -660,16 +662,42 @@ class StatusPopover:
             _revert,
         )
 
+    def _resize_to_current_view(self) -> None:
+        """Resize the popover to match the current content controller view.
+
+        Called on each view swap (More/Back). Without it, the popover keeps
+        the size it had at first show, and the new view either sits inside
+        a too-tall popover (extra empty space below — what the user sees
+        after going Default → More → Back) or gets clipped.
+        """
+        if self._popover is None or self._content_controller is None:
+            return
+        view = self._content_controller.view()
+        if view is None:
+            return
+        frame = view.frame()
+        try:
+            size = (frame.size.width, frame.size.height)
+        except AttributeError:
+            size = (frame[1][0], frame[1][1])
+        if size[0] > 0 and size[1] > 0:
+            try:
+                self._popover.setContentSize_(size)
+            except Exception:
+                pass
+
     def _on_show_more(self) -> None:
         """Swap the controller's view to the More panel."""
         if self._content_controller is None or self._more_view is None:
             return
         self._content_controller.setView_(self._more_view)
+        self._resize_to_current_view()
 
     def _on_back_to_default(self) -> None:
         if self._content_controller is None or self._default_view is None:
             return
         self._content_controller.setView_(self._default_view)
+        self._resize_to_current_view()
 
     def _on_start_at_login_toggle(self, enabled: bool) -> None:
         from bsky_saves_launcher.launchagent import (
