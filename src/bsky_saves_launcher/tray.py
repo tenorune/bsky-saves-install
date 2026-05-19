@@ -167,64 +167,8 @@ class TrayApp:
             self._icon.visible = True
         self._flag_macos_template_image()
         self._install_click_action()
-        self._configure_state_driven_button()
         self._install_badge_layer()
         self._start_health_timer()
-
-    def _configure_state_driven_button(self) -> None:
-        """Make the tray button's pressed look driven by state, not tracking.
-
-        Default NSStatusBarButton behavior: mouseDown highlights the button,
-        mouseUp un-highlights. That produces a flicker on the round-trip
-        from click → popover open (system unhighlights at mouseUp, then we
-        re-apply highlight a moment later for the Selected appearance).
-
-        Re-wire the cell so tracking has no visual effect (highlightsBy=0)
-        and visual appearance follows the button's state (showsStateBy=
-        NSChangeBackgroundCellMask). The popover toggles state via
-        set_selected(True/False) on show/close — no NSTimer, no blink.
-        """
-        import sys
-
-        if sys.platform != "darwin" or self._icon is None:
-            return
-        try:
-            from AppKit import (  # type: ignore[import-not-found]
-                NSChangeBackgroundCellMask,
-            )
-
-            status_item = getattr(self._icon, "_status_item", None)
-            if status_item is None:
-                return
-            button = status_item.button()
-            if button is None:
-                return
-            cell = button.cell()
-            if cell is None:
-                return
-            cell.setHighlightsBy_(0)
-            cell.setShowsStateBy_(NSChangeBackgroundCellMask)
-            button.setState_(0)  # NSControlStateValueOff = Unselected
-        except Exception as exc:
-            print(f"[tray] state-driven config failed: {exc!r}", file=sys.stderr)
-
-    def set_selected(self, selected: bool) -> None:
-        """Set the tray button's Selected/Unselected visual state."""
-        import sys
-
-        if sys.platform != "darwin" or self._icon is None:
-            return
-        try:
-            status_item = getattr(self._icon, "_status_item", None)
-            if status_item is None:
-                return
-            button = status_item.button()
-            if button is None:
-                return
-            button.setState_(1 if selected else 0)
-            button.setNeedsDisplay_(True)
-        except Exception:
-            pass
 
     def _install_click_action(self) -> None:
         """Wire the NSStatusItem button to open the popover on left-click.

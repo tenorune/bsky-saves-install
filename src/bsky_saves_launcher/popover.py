@@ -494,15 +494,22 @@ class StatusPopover:
                 ak["NSRectEdgeMinY"],  # popover hangs below the menu-bar button
             )
             # Mark the menu-bar button Selected while the popover is open.
-            # The tray button is configured state-driven (see
-            # TrayApp._configure_state_driven_button), so this is a single
-            # property set — no NSTimer, no flicker.
+            # NSStatusBarButton resets its highlight at mouseUp on the same
+            # click that fired our action, so we keep it pressed via:
+            #   1. an immediate synchronous setHighlighted_(True) — fires
+            #      inside the same event tick as the system's un-highlight,
+            #      typically winning the final redraw.
+            #   2. a high-frequency keeper timer (~120Hz) on
+            #      NSRunLoopCommonModes that re-applies the highlight every
+            #      frame while the popover is open. Any frame where the
+            #      system briefly cleared it gets corrected within ~8ms.
             self._tray_button = button
             try:
-                button.setState_(1)  # NSControlStateValueOn = Selected
+                button.setHighlighted_(True)
                 button.setNeedsDisplay_(True)
             except Exception:
                 pass
+            self._start_highlight_keeper(button)
             # Lock the popover window's appearance to the current system
             # appearance after show. Setting it on the popover alone wasn't
             # enough — NSPopover's private window also has its own appearance
@@ -701,61 +708,90 @@ class StatusPopover:
 
     def _animated_swap_controller(self, controller) -> None:
         """Swap the popover's contentViewController and animate the size
-        change ourselves.
+        change with a manual frame-stepped tween.
 
         NSPopover.setContentViewController_ has an intrinsic cross-fade
-        between the old and new view controllers — that's the panel
-        "blink" the user notices. To kill the flash and control the
-        animation speed, we do the swap with animates=False (instant,
-        no fade), rewind the popover's contentSize to the old size,
-        then animate forward to the new size at our chosen duration.
-        Visually: the new panel content appears immediately, then the
-        popover smoothly resizes around it.
+        between view controllers — that's the panel "blink". Snap-swap
+        the controller with animates=False (no fade), rewind contentSize
+        to the old size, then drive contentSize toward the new size in
+        small steps via a 60Hz NSTimer with an ease-in-out curve. This
+        produces a visible 0.5s resize animation that the popover's
+        built-in animator() proxy didn't deliver reliably on the macOS
+        versions we target.
         """
-        try:
-            from AppKit import NSAnimationContext  # type: ignore[import-not-found]
-        except Exception:
-            try:
-                self._popover.setContentViewController_(controller)
-            except Exception:
-                pass
-            return
-
         try:
             old_size = self._popover.contentSize()
             new_size = controller.preferredContentSize()
             try:
-                old_w = old_size.width
-                old_h = old_size.height
+                old_w, old_h = old_size.width, old_size.height
             except AttributeError:
                 old_w, old_h = old_size[0], old_size[1]
             try:
-                new_w = new_size.width
-                new_h = new_size.height
+                new_w, new_h = new_size.width, new_size.height
             except AttributeError:
                 new_w, new_h = new_size[0], new_size[1]
 
+            # Snap-swap content with no cross-fade.
             self._popover.setAnimates_(False)
             self._popover.setContentViewController_(controller)
-            # setContentViewController_ snaps contentSize to the new
-            # controller's preferredContentSize. Rewind so the explicit
-            # animation below has somewhere to animate from.
             self._popover.setContentSize_((old_w, old_h))
             self._popover.setAnimates_(True)
 
-            NSAnimationContext.beginGrouping()
-            try:
-                ctx = NSAnimationContext.currentContext()
-                ctx.setDuration_(0.5)
-                self._popover.animator().setContentSize_((new_w, new_h))
-            finally:
-                NSAnimationContext.endGrouping()
+            self._start_size_tween(old_w, old_h, new_w, new_h, duration_s=0.5)
         except Exception as exc:
             print(f"[popover] animated swap failed: {exc!r}", file=sys.stderr)
             try:
                 self._popover.setContentViewController_(controller)
             except Exception:
                 pass
+
+    def _start_size_tween(self, ow, oh, nw, nh, *, duration_s: float) -> None:
+        """Drive popover.contentSize from (ow, oh) to (nw, nh) over duration."""
+        import math
+
+        from Foundation import (  # type: ignore[import-not-found]
+            NSRunLoop,
+            NSRunLoopCommonModes,
+            NSTimer,
+        )
+
+        # Cancel any in-flight tween so back-to-back swaps don't fight.
+        existing = getattr(self, "_size_tween_timer", None)
+        if existing is not None:
+            try:
+                existing.invalidate()
+            except Exception:
+                pass
+            self._size_tween_timer = None
+
+        fps = 60.0
+        n_steps = max(1, int(round(duration_s * fps)))
+        interval = duration_s / n_steps
+        state = {"i": 0}
+
+        popover = self._popover
+
+        def tick(t):
+            state["i"] += 1
+            progress = min(1.0, state["i"] / n_steps)
+            # ease-in-out via cosine — slow start, slow end.
+            eased = 0.5 * (1.0 - math.cos(progress * math.pi))
+            cw = ow + (nw - ow) * eased
+            ch = oh + (nh - oh) * eased
+            try:
+                popover.setContentSize_((cw, ch))
+            except Exception:
+                pass
+            if state["i"] >= n_steps:
+                try:
+                    t.invalidate()
+                except Exception:
+                    pass
+                self._size_tween_timer = None
+
+        timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
+        NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+        self._size_tween_timer = timer
 
     def _on_start_at_login_toggle(self, enabled: bool) -> None:
         from bsky_saves_launcher.launchagent import (
@@ -789,15 +825,49 @@ class StatusPopover:
     def _on_popover_will_close(self) -> None:
         """NSPopoverDelegate hook — fires at the start of the close.
 
-        Mark the tray button Unselected immediately so the pressed-state
-        release lands at the start of the close animation, not after it.
+        Stop the highlight keeper and un-highlight the tray button right
+        away so the pressed-state release lands at the start of the close
+        animation, not after it.
         """
+        self._stop_highlight_keeper()
         if self._tray_button is not None:
             try:
-                self._tray_button.setState_(0)
+                self._tray_button.setHighlighted_(False)
                 self._tray_button.setNeedsDisplay_(True)
             except Exception:
                 pass
+
+    def _start_highlight_keeper(self, button) -> None:
+        """Schedule a high-frequency timer that re-asserts the tray button's
+        highlight while the popover is open."""
+        try:
+            from Foundation import (  # type: ignore[import-not-found]
+                NSRunLoop,
+                NSRunLoopCommonModes,
+                NSTimer,
+            )
+
+            def keep(_t):
+                try:
+                    if not button.isHighlighted():
+                        button.setHighlighted_(True)
+                except Exception:
+                    pass
+
+            timer = NSTimer.timerWithTimeInterval_repeats_block_(1.0 / 120.0, True, keep)
+            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+            self._highlight_keeper_timer = timer
+        except Exception as exc:
+            print(f"[popover] highlight keeper failed: {exc!r}", file=sys.stderr)
+
+    def _stop_highlight_keeper(self) -> None:
+        timer = getattr(self, "_highlight_keeper_timer", None)
+        if timer is not None:
+            try:
+                timer.invalidate()
+            except Exception:
+                pass
+            self._highlight_keeper_timer = None
 
     def _on_popover_did_close(self) -> None:
         """NSPopoverDelegate hook — fires after the popover finishes closing."""
