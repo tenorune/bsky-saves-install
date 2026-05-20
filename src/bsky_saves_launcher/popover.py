@@ -906,7 +906,6 @@ class StatusPopover:
         popover.setContentSize_ directly was inconsistent on Tahoe; the
         preferredContentSize path is the documented one.
         """
-        print("[popover] swap: entering _animated_swap_controller", file=sys.stderr)
         try:
             old_size = self._popover.contentSize()
             new_size = controller.preferredContentSize()
@@ -918,12 +917,6 @@ class StatusPopover:
                 new_w, new_h = new_size.width, new_size.height
             except AttributeError:
                 new_w, new_h = new_size[0], new_size[1]
-            print(
-                f"[popover] swap: old={old_w:.0f}x{old_h:.0f} "
-                f"new={new_w:.0f}x{new_h:.0f}",
-                file=sys.stderr,
-            )
-
             # Snap content swap (no cross-fade flash). Force the new
             # controller's preferredContentSize to the OLD size so the
             # popover doesn't snap to new_size before we can tween.
@@ -992,11 +985,6 @@ class StatusPopover:
                     pass
                 self._size_tween_timer = None
 
-        print(
-            f"[popover] tween {ow:.0f}x{oh:.0f} -> {nw:.0f}x{nh:.0f} "
-            f"over {duration_s}s ({n_steps} steps, interval={interval:.3f}s)",
-            file=sys.stderr,
-        )
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
         self._size_tween_timer = timer
@@ -1079,12 +1067,9 @@ class StatusPopover:
         if window is None:
             return
 
-        counts = {"vev": 0, "views": 0}
-
         def walk(v):
             if v is None:
                 return
-            counts["views"] += 1
             # isKindOfClass_ catches private NSVisualEffectView subclasses
             # that Python's isinstance can miss; respondsToSelector_ is the
             # duck-typed fallback if the class check is unexpectedly false.
@@ -1095,7 +1080,6 @@ class StatusPopover:
             except Exception:
                 matches = False
             if matches:
-                counts["vev"] += 1
                 try:
                     v.setState_(NSVisualEffectStateActive)
                 except Exception:
@@ -1114,8 +1098,3 @@ class StatusPopover:
             return
         root = content.superview() or content
         walk(root)
-        print(
-            f"[popover] frame-pin walked {counts['views']} views, "
-            f"pinned {counts['vev']} NSVisualEffectView(s)",
-            file=sys.stderr,
-        )
