@@ -374,18 +374,22 @@ def _build_more_view(
     left_spacer.widthAnchor().constraintEqualToAnchor_(
         right_spacer.widthAnchor()
     ).setActive_(True)
-    # Tell the outer stack not to stretch this row vertically. Combined
-    # with the top-alignment above, this keeps the grid's vertical
-    # position stable across re-layouts.
+    # Tell the outer stack not to stretch this row vertically, plus
+    # pin the row's height to the grid's height directly. Two layers
+    # of defence against the occasional re-layout drift.
     table_row.setContentHuggingPriority_forOrientation_(
         1000, NSLayoutConstraintOrientationVertical
     )
+    table_row.heightAnchor().constraintEqualToAnchor_(
+        grid.heightAnchor()
+    ).setActive_(True)
     stack.addArrangedSubview_(table_row)
 
-    # Space above the grid (below "← Back"); tight space below the grid.
+    # Tighten the gap below "← Back" and give the grid more breathing
+    # room above the separator. Moves the grid up in the panel.
     try:
-        stack.setCustomSpacing_afterView_(16.0, back_row)
-        stack.setCustomSpacing_afterView_(4.0, table_row)
+        stack.setCustomSpacing_afterView_(6.0, back_row)
+        stack.setCustomSpacing_afterView_(14.0, table_row)
     except Exception:
         pass
 
