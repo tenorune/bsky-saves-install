@@ -175,45 +175,55 @@ def _build_default_view(
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
         NSFont,
+        NSFontAttributeName,
         NSStackView,
         NSStackViewDistributionFill,
-        NSStackViewDistributionFillEqually,
         NSTextAlignmentCenter,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
         NSView,
     )
+    from Foundation import (  # type: ignore[import-not-found]
+        NSMakeRange,
+        NSMutableAttributedString,
+    )
 
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
-    stack.setSpacing_(6.0)
+    stack.setSpacing_(8.0)
     stack.setEdgeInsets_((6, 12, 8, 12))
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     stack.addArrangedSubview_(status_label)
 
-    # "Open BSky Saves" section header, centered.
+    # "Open BSky Saves" header — "BSky Saves" in bold.
     open_header = NSTextField.labelWithString_("Open BSky Saves")
     open_header.setAlignment_(NSTextAlignmentCenter)
-    open_header.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize()))
+    header_text = "Open BSky Saves"
+    header_attr = NSMutableAttributedString.alloc().initWithString_(header_text)
+    regular_font = NSFont.systemFontOfSize_(NSFont.systemFontSize())
+    bold_font = NSFont.boldSystemFontOfSize_(NSFont.systemFontSize())
+    header_attr.addAttribute_value_range_(
+        NSFontAttributeName, regular_font, NSMakeRange(0, len(header_text))
+    )
+    # "BSky Saves" starts at offset 5 ("Open "), length 10.
+    header_attr.addAttribute_value_range_(NSFontAttributeName, bold_font, NSMakeRange(5, 10))
+    # Re-apply center alignment on the attributed string.
+    open_header.setAttributedStringValue_(header_attr)
+    open_header.setAlignment_(NSTextAlignmentCenter)
     stack.addArrangedSubview_(open_header)
 
-    # Two side-by-side buttons under the header.
-    open_row = NSStackView.alloc().init()
-    open_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    open_row.setDistribution_(NSStackViewDistributionFillEqually)
-    open_row.setSpacing_(8.0)
-
+    # Local GUI and saves.lightseed.net — each on its own line.
     local_gui_button = NSButton.buttonWithTitle_target_action_("Local GUI", None, None)
     local_gui_button.setBezelStyle_(1)
     local_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_local_gui)
     targets_out.append(local_target)
     local_gui_button.setTarget_(local_target)
     local_gui_button.setAction_("invoke:")
-    open_row.addArrangedSubview_(local_gui_button)
+    stack.addArrangedSubview_(local_gui_button)
 
     saves_site_button = NSButton.buttonWithTitle_target_action_(
         "saves.lightseed.net", None, None
@@ -223,15 +233,13 @@ def _build_default_view(
     targets_out.append(saves_target)
     saves_site_button.setTarget_(saves_target)
     saves_site_button.setAction_("invoke:")
-    open_row.addArrangedSubview_(saves_site_button)
+    stack.addArrangedSubview_(saves_site_button)
 
-    stack.addArrangedSubview_(open_row)
-
-    # Add breathing room between the status line and the Open header,
-    # and between the buttons row and the More link.
+    # More space between status and the Open header; little space
+    # between the buttons; more breathing room before the bottom link.
     try:
-        stack.setCustomSpacing_afterView_(12.0, status_label)
-        stack.setCustomSpacing_afterView_(12.0, open_row)
+        stack.setCustomSpacing_afterView_(20.0, status_label)
+        stack.setCustomSpacing_afterView_(12.0, saves_site_button)
     except Exception:
         pass
 
@@ -245,7 +253,7 @@ def _build_default_view(
     more_row.addArrangedSubview_(more_link)
     stack.addArrangedSubview_(more_row)
 
-    stack.setFrame_(((0, 0), (300, 150)))
+    stack.setFrame_(((0, 0), (300, 200)))
 
     return stack, status_label, None, None
 
@@ -286,6 +294,7 @@ def _build_more_view(
         NSGridView,
         NSStackView,
         NSStackViewDistributionFill,
+        NSStackViewGravityCenter,
         NSSwitch,
         NSTextAlignmentCenter,
         NSTextField,
@@ -311,9 +320,8 @@ def _build_more_view(
     stack.addArrangedSubview_(back_row)
 
     # Two-row, two-column table: labels in left column, controls in
-    # right column. NSGridView gives us proper column alignment for
-    # free.
-    pairing_label = NSTextField.labelWithString_("Pairing Token:")
+    # right column. NSGridView gives us proper column alignment.
+    pairing_label = NSTextField.labelWithString_("Pairing Token")
     copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
     copy_button_default_title = "Copy"
     copy_button.setBezelStyle_(1)
@@ -322,7 +330,7 @@ def _build_more_view(
     copy_button.setTarget_(copy_target)
     copy_button.setAction_("invoke:")
 
-    sal_label = NSTextField.labelWithString_("Start at login:")
+    sal_label = NSTextField.labelWithString_("Start at login")
     start_at_login_switch = NSSwitch.alloc().init()
     start_at_login_switch.setState_(
         NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
@@ -344,23 +352,24 @@ def _build_more_view(
     )
     grid.setRowSpacing_(8.0)
     grid.setColumnSpacing_(12.0)
-    # Left column (labels) trailing-aligned, right column (controls)
-    # leading-aligned — matches the user's "labels column / controls
-    # column" intent.
     grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
     grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementLeading)
 
-    # Center the whole table in the panel via a horizontal row with
-    # flex spacers on both sides.
+    # Center the grid in the panel. NSStackView with addView:inGravity:
+    # NSStackViewGravityCenter places the grid in the centre of the
+    # row regardless of intrinsic content size — no need for flex
+    # spacers (which didn't actually centre the previous layout).
     table_row = NSStackView.alloc().init()
     table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     table_row.setSpacing_(0)
-    table_left_spacer = NSView.alloc().init()
-    table_right_spacer = NSView.alloc().init()
-    table_row.addArrangedSubview_(table_left_spacer)
-    table_row.addArrangedSubview_(grid)
-    table_row.addArrangedSubview_(table_right_spacer)
+    table_row.addView_inGravity_(grid, NSStackViewGravityCenter)
     stack.addArrangedSubview_(table_row)
+
+    # Space above the grid (below "← Back").
+    try:
+        stack.setCustomSpacing_afterView_(16.0, back_row)
+    except Exception:
+        pass
 
     # Horizontal separator after the table.
     separator = NSBox.alloc().init()
