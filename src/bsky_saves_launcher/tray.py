@@ -1,12 +1,12 @@
 """Menu-bar / system-tray icon for the launcher.
 
-Renders a pystray icon, wires up a minimal v0.1 menu (Open GUI, Quit), and
-exposes a callback hook for opening the status window on icon click.
+Renders a pystray icon, wires click-to-open-popover, and overlays a small
+colored state badge in the icon's bottom-right corner (green/yellow/red
+per HelperState — same color logic as the popover's status dot).
 """
 
 from __future__ import annotations
 
-import os
 import webbrowser
 from collections.abc import Callable
 from typing import TYPE_CHECKING
@@ -19,6 +19,7 @@ if TYPE_CHECKING:
 from bsky_saves_launcher.supervisor import Supervisor
 
 LOCAL_GUI_URL = "http://127.0.0.1:47826/"
+HEALTH_TICK_SECONDS = 5.0
 
 # v0.1: each "Open GUI" click hands the URL to the default browser via
 # webbrowser.open, which opens a new tab. An AppleScript variant that focuses
@@ -90,6 +91,32 @@ def _make_icon_image(*, running: bool) -> Image.Image:  # noqa: ARG001 (running 
     return Image.open(path).convert("RGBA")
 
 
+def _status_badge_color(state):
+    """NSColor for the menu-bar badge dot. Only red is surfaced — green and
+    yellow correspond to healthy / transient-starting and are hidden via
+    _state_should_show_badge below. Lazy AppKit import so this module
+    imports cleanly on non-macOS for tests."""
+    from AppKit import NSColor  # type: ignore[import-not-found]
+
+    return NSColor.systemRedColor()
+
+
+def _state_should_show_badge(state) -> bool:
+    """True when the menu-bar badge should be visible.
+
+    Only failure-mode states surface a badge — RUNNING and STARTING don't
+    draw user attention to the menu bar. STOPPED / UNRESPONSIVE /
+    PORT_CONFLICT all warrant a red dot.
+    """
+    from bsky_saves_launcher.health import HelperState
+
+    return state in {
+        HelperState.STOPPED,
+        HelperState.UNRESPONSIVE,
+        HelperState.PORT_CONFLICT,
+    }
+
+
 class TrayApp:
     """Owns the pystray icon and dispatches its menu items."""
 
@@ -98,47 +125,32 @@ class TrayApp:
         supervisor: Supervisor,
         *,
         on_open_status: Callable[[], None],
+        helper_started: float | None = None,
     ) -> None:
         self._supervisor = supervisor
         self._on_open_status = on_open_status
+        self._helper_started = helper_started
+        self._last_ping_ok: float | None = None
         self._icon: pystray.Icon | None = None
-
-    def _on_open_gui(self, icon, item) -> None:  # noqa: F821
-        _open_or_focus_gui()
-
-    # NOTE: "Copy pairing token" was a tray menu item in v0.2.0 but caused two
-    # UX issues: (1) macOS `display notification` adds a "Show" button that
-    # opens Script Editor, which is jarring; (2) the action belongs in the
-    # status surface (popover), not the menu. The functionality lives in
-    # bsky_saves_launcher.token + .clipboard; reattach via the popover's
-    # Copy-token button when that lands. See
-    # docs/superpowers/specs/2026-05-17-status-window-contents.md D2.
-
-    def _on_quit(self, icon, item) -> None:  # noqa: F821
-        # The helper runs in a daemon thread inside this process and can't be
-        # stopped cleanly (Python threads aren't killable). Terminate the
-        # whole process to take it down.
-        icon.stop()
-        os._exit(0)
-
-    def _on_default(self, icon, item) -> None:  # noqa: F821
-        # Triggered by left-click on the icon (pystray default action).
-        self._on_open_status()
+        self._badge_layer = None
+        self._health_timer = None
+        self._tray_button = None
+        self._click_monitor = None
 
     def run(self) -> None:
         """Block on the pystray event loop. Must be called on the main thread."""
         import pystray
 
-        menu = pystray.Menu(
-            pystray.MenuItem("Show status...", self._on_default),
-            pystray.MenuItem("Open GUI", self._on_open_gui),
-            pystray.MenuItem("Quit", self._on_quit),
-        )
+        # No pystray menu — pystray's macOS backend forces left-click to
+        # show the menu whenever one is attached (HAS_DEFAULT_ACTION=False
+        # in pystray/_darwin.py, "We support only a default action with an
+        # empty menu"). Left-click must open the popover, so we omit the
+        # menu and wire the NSStatusItem button's action directly in
+        # _on_pystray_ready. Quit lives in the popover.
         self._icon = pystray.Icon(
             name="bsky-saves",
             icon=_make_icon_image(running=self._supervisor.is_alive()),
             title="BSky Saves",
-            menu=menu,
         )
         # `setup` runs after pystray's NSStatusItem is created (the constructor
         # only stashes our PIL image; the native item doesn't exist yet at
@@ -155,45 +167,261 @@ class TrayApp:
         if self._icon is not None:
             self._icon.visible = True
         self._flag_macos_template_image()
+        self._install_click_action()
+        self._install_badge_layer()
+        self._start_health_timer()
 
-    def _flag_macos_template_image(self) -> None:
-        """Configure the menu-bar NSImage to match Apple's HIG.
+    def _install_click_action(self) -> None:
+        """Hijack the status item's click handling via an NSEvent local
+        monitor.
 
-        Two PyObjC tweaks to pystray's macOS NSImage:
+        Why not pystray's target/action wiring? With pystray's setTarget_
+        + setAction_, the cell's normal mouseDown→mouseUp tracking cycle
+        runs, and on mouseUp the cell un-highlights the button before
+        our re-apply can land — producing the brief Selected-state blink
+        we couldn't eliminate via any of NSTimer / KVO / cell isa-swap /
+        classAddMethods swizzle / CFRunLoopObserver / 60Hz keeper.
 
-        1. setTemplate_(YES) — tells macOS this is a template image, so it
-           handles light/dark/tinted-mode adaptation automatically.
-        2. setSize_((22, 22)) — sets the *logical* (point) size to match
-           Apple's menu-bar template-image convention (Sonoma → Tahoe).
-           pystray hands the raw PNG bytes to NSImage without setting a
-           logical size, so NSImage defaults to the pixel size (88pt for
-           our 88x88 PNG) — which renders much larger than neighboring
-           system icons. The 88px pixel resolution remains as 4x retina
-           detail behind the 22pt logical render.
-
-        Must run AFTER pystray initializes the NSStatusItem (call from the
-        setup= callback to Icon.run()); calling earlier silently no-ops
-        because _status_item is still None.
+        With NSEvent.addLocalMonitor we see the mouseDown *before* it
+        reaches the cell. We toggle the popover and set highlight=True
+        ourselves, then return None from the handler to consume the
+        event — the cell's tracking never starts, so it can't
+        auto-un-highlight on mouseUp. This is the technique used by
+        production menu-bar apps that want the system-default
+        highlighted appearance with a popover.
         """
         import sys
 
         if sys.platform != "darwin" or self._icon is None:
             return
         try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSEvent,
+                NSEventMaskLeftMouseDown,
+            )
+
             status_item = getattr(self._icon, "_status_item", None)
             if status_item is None:
                 return
-            ns_image = status_item.button().image()
+            button = status_item.button()
+            if button is None:
+                return
+            self._tray_button = button
+
+            on_open_status = self._on_open_status
+
+            def handler(event):
+                # Only handle events targeted at the status item's window.
+                try:
+                    if event.window() is None:
+                        return event
+                    if event.window() is not button.window():
+                        return event
+                except Exception:
+                    return event
+                # Set the highlight BEFORE delegating to on_open_status
+                # so that on the close path (popoverWillClose_ fires
+                # inside the toggle and un-highlights), the un-highlight
+                # is the last write and wins. Setting highlight after
+                # would re-highlight a just-closed popover and leave
+                # the button stuck on.
+                try:
+                    button.setHighlighted_(True)
+                    on_open_status()
+                except Exception as exc:
+                    print(f"[tray] click handler failed: {exc!r}", file=sys.stderr)
+                return None
+
+            monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                NSEventMaskLeftMouseDown, handler
+            )
+            self._click_monitor = monitor
+        except Exception as exc:
+            print(f"[tray] _install_click_action failed: {exc!r}", file=sys.stderr)
+
+    def _flag_macos_template_image(self) -> None:
+        """Configure the menu-bar NSImage.
+
+        Prefer a vector PDF (menubar.pdf) when bundled — NSImage renders
+        PDFs as true vectors at any size — falling back to the raster PNG
+        otherwise. In both cases:
+
+        - setTemplate_(YES) → macOS tints the glyph for light/dark/tinted.
+        - setSize_((22, 22)) → logical (point) size matches Apple's menu-
+          bar template-image convention.
+
+        Must run AFTER pystray initializes the NSStatusItem (call from the
+        setup= callback to Icon.run()); calling earlier silently no-ops.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            from pathlib import Path
+
+            from AppKit import NSImage  # type: ignore[import-not-found]
+
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            button = status_item.button()
+            if button is None:
+                return
+
+            here = Path(__file__).resolve().parent
+            pdf_path = here / "resources" / "menubar.pdf"
+            ns_image = None
+            if pdf_path.exists():
+                ns_image = NSImage.alloc().initWithContentsOfFile_(str(pdf_path))
+                if ns_image is not None:
+                    button.setImage_(ns_image)
+            if ns_image is None:
+                ns_image = button.image()
             if ns_image is not None:
                 ns_image.setTemplate_(True)
-                # PyObjC accepts a (w, h) tuple as an NSSize.
                 ns_image.setSize_((22, 22))
         except Exception:
-            # Patch is best-effort — if pystray's internals shifted, fall
-            # back to the un-flagged image. The launcher still works; the
-            # icon just doesn't auto-adapt to dark mode and may render at
-            # the wrong size.
+            # Best-effort — if the PDF/Image setup fails, fall back to the
+            # un-flagged image already on the button (still renders, just
+            # may not adapt to dark mode or have correct logical size).
             pass
+
+    def _install_badge_layer(self) -> None:
+        """Add a small colored CALayer to the status button's corner.
+
+        The silhouette stays a template image so macOS keeps adapting it
+        to light/dark/tinted appearances. The badge is a separate layer
+        drawn on top so it can carry color without losing the silhouette's
+        adaptive rendering — template-image semantics force the underlying
+        PNG to grayscale.
+        """
+        import sys
+
+        if sys.platform != "darwin" or self._icon is None:
+            return
+        try:
+            from AppKit import NSColor  # type: ignore[import-not-found]
+            from Quartz import CAShapeLayer  # type: ignore[import-not-found]
+
+            status_item = getattr(self._icon, "_status_item", None)
+            if status_item is None:
+                return
+            button = status_item.button()
+            if button is None:
+                return
+            button.setWantsLayer_(True)
+            layer = CAShapeLayer.layer()
+            # Position the 6pt dot at the bottom-right corner of the
+            # button. NSStatusBarButton's layer uses flipped geometry
+            # (origin top-left), so "bottom" means high Y. Read bounds
+            # rather than hardcoding so we adapt to whatever width macOS
+            # gives the status item (varies a few points by macOS
+            # version / status-bar layout).
+            bounds = button.bounds()
+            try:
+                bw, bh = bounds.size.width, bounds.size.height
+            except AttributeError:
+                bw, bh = bounds[1][0], bounds[1][1]
+            badge_size = 6.0
+            margin = 1.0
+            # Pull the badge a bit more than a full badge-width into the icon
+            # so it sits clearly over the silhouette rather than at the edge.
+            overlap = badge_size + 2.0
+            layer.setFrame_((
+                (bw - badge_size - margin - overlap, bh - badge_size - margin),
+                (badge_size, badge_size),
+            ))
+            layer.setCornerRadius_(badge_size / 2.0)
+            layer.setBackgroundColor_(NSColor.systemRedColor().CGColor())
+            layer.setHidden_(True)  # start hidden; tick reveals on red state
+            button.layer().addSublayer_(layer)
+            self._badge_layer = layer
+        except Exception as exc:
+            print(f"[tray] _install_badge_layer failed: {exc!r}", file=sys.stderr)
+
+    def _start_health_timer(self) -> None:
+        """Poll helper health every HEALTH_TICK_SECONDS to update the badge.
+
+        Add the timer to the main run loop in NSRunLoopCommonModes so it
+        fires regardless of which run-loop mode pystray's event pump is
+        currently in. The plain scheduledTimer convenience installs into
+        the default mode only, which is why a timer that ticked once at
+        startup was never firing again under pystray's loop.
+        """
+        import sys
+
+        if sys.platform != "darwin":
+            return
+        try:
+            from Foundation import (  # type: ignore[import-not-found]
+                NSRunLoop,
+                NSRunLoopCommonModes,
+                NSTimer,
+            )
+
+            timer = NSTimer.timerWithTimeInterval_repeats_block_(
+                HEALTH_TICK_SECONDS,
+                True,
+                lambda _t: self._on_health_tick(),
+            )
+            NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
+            self._health_timer = timer
+            # Kick once immediately so we don't wait HEALTH_TICK_SECONDS to
+            # learn the helper state on launch.
+            self._on_health_tick()
+        except Exception as exc:
+            print(f"[tray] _start_health_timer failed: {exc!r}", file=sys.stderr)
+
+    def _on_health_tick(self) -> None:
+        """Compute health, toggle the badge, and auto-restart a dead helper.
+
+        Only failure-mode states surface a (red) badge — healthy and
+        transient-starting states keep the badge hidden.
+
+        Auto-restart: bsky-saves' serve thread dies if it can't bind to
+        port 47826 (e.g. another bsky-saves was already running at our
+        launch). Without restart logic the helper stays dead forever even
+        after the conflicting instance quits. On every tick where the
+        supervisor thread is no longer alive, ask the supervisor to
+        re-start; Supervisor.start() is a no-op if the thread is already
+        running, so this is safe to call unconditionally.
+        """
+        import sys
+        import time
+
+        if self._badge_layer is None:
+            return
+        try:
+            from bsky_saves_launcher.health import compute_health
+
+            snapshot = compute_health(
+                self._supervisor,
+                last_ping_ok=self._last_ping_ok,
+                helper_started=self._helper_started,
+            )
+            if snapshot.last_seen_ok is not None:
+                self._last_ping_ok = snapshot.last_seen_ok
+
+            if not self._supervisor.is_alive():
+                # Helper thread is dead — restart. Reset the start clock so
+                # the next few ticks see STARTING (within grace) rather
+                # than UNRESPONSIVE.
+                self._helper_started = time.monotonic()
+                self._supervisor.start()
+
+            show = _state_should_show_badge(snapshot.state)
+            self._badge_layer.setHidden_(not show)
+            if show:
+                self._badge_layer.setBackgroundColor_(
+                    _status_badge_color(snapshot.state).CGColor()
+                )
+        except Exception as exc:
+            print(f"[tray] _on_health_tick failed: {exc!r}", file=sys.stderr)
+
+    def icon_handle(self):
+        """Return the underlying pystray.Icon (only valid after run() starts)."""
+        return self._icon
 
     def refresh_icon(self) -> None:
         """Re-render the icon image based on supervisor state."""

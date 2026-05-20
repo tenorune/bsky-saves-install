@@ -45,7 +45,7 @@ addopts = "-q"
 [tool.briefcase]
 project_name = "BSky Saves"
 bundle = "net.lightseed"
-version = "0.2.1"
+version = "0.3.0"
 url = "https://github.com/tenorune/bsky-saves-install"
 license = "MIT"
 author = "tenorune"
@@ -80,3 +80,12 @@ universal_build = true
 requires = [
     "std-nslog~=1.0",
 ]
+
+[tool.briefcase.app.bsky-saves-launcher.macOS.info]
+# Mark the app as a UI-element-only background app at the OS level. This
+# is the primary signal to macOS that we're a menu-bar daemon launcher,
+# not a foreground app — no Dock icon, no Cmd-Tab entry, no app menu.
+# Together with the runtime NSApp.setActivationPolicy_(Accessory) call in
+# app.py, this keeps the launcher out of the Dock and app switcher even
+# across cold start, app-bundle re-launches from Dock recents, etc.
+LSUIElement = true

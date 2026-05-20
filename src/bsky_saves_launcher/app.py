@@ -1,10 +1,12 @@
-"""Launcher entry point — wires supervisor, tray, and status window together."""
+"""Launcher entry point — wires supervisor, tray, and popover together."""
 
 from __future__ import annotations
 
 import os
 import ssl
 import sys
+
+from bsky_saves_launcher.activation import apply_activation_policy
 
 # TLS workaround for tenorune/bsky-saves#19 — AWS WAF rejects requests from the
 # bundled Python's OpenSSL 3.0.x default TLS handshake (JA3
@@ -85,7 +87,7 @@ if not os.environ.get("BSKY_SAVES_TLS_DISABLE"):
 
 from bsky_saves.cli import main as bsky_saves_main  # noqa: E402
 
-from bsky_saves_launcher.status_window import StatusWindow  # noqa: E402
+from bsky_saves_launcher.popover import StatusPopover  # noqa: E402
 from bsky_saves_launcher.supervisor import Supervisor  # noqa: E402
 from bsky_saves_launcher.tray import TrayApp  # noqa: E402
 
@@ -231,15 +233,39 @@ def _run_probe() -> None:
 
 
 def main() -> int:
+    print("[launcher] BSky Saves launcher starting (v0.3.0 popover build)", file=sys.stderr)
+
     if os.environ.get("BSKY_SAVES_PROBE"):
         _run_probe()
         return 0
 
+    # Hardcoded menu-bar-only (Accessory) policy. LSUIElement=true in
+    # Info.plist handles this at app launch; the runtime call is belt-and-
+    # braces for the case where the bundle is launched in a way that
+    # bypasses Info.plist (e.g. running the stub binary directly).
+    apply_activation_policy(show_in_dock=False)
+
     supervisor = Supervisor(target=bsky_saves_main, args=(HELPER_ARGV,))
-    status_window = StatusWindow(supervisor)
+
+    popover_holder: dict[str, StatusPopover | None] = {"popover": None}
+
+    def _open_status() -> None:
+        if popover_holder["popover"] is None:
+            popover_holder["popover"] = StatusPopover(
+                supervisor, tray.icon_handle(), tray=tray
+            )
+            popover_holder["popover"].notify_helper_started()
+        # Toggle behavior — our NSEvent monitor consumes the click, so
+        # the popover's transient-close-on-click-outside doesn't fire
+        # when the user clicks the tray icon to dismiss the popover.
+        # Handle dismissal explicitly here.
+        popover_holder["popover"].toggle()
+
+    import time
 
     supervisor.start()
-    tray = TrayApp(supervisor, on_open_status=status_window.open)
+    helper_started = time.monotonic()
+    tray = TrayApp(supervisor, on_open_status=_open_status, helper_started=helper_started)
     tray.run()
     return 0
 
