@@ -274,6 +274,7 @@ def _build_more_view(
         NSControlStateValueOff,
         NSControlStateValueOn,
         NSFont,
+        NSGridCellPlacementCenter,
         NSGridCellPlacementLeading,
         NSGridCellPlacementTrailing,
         NSGridView,
@@ -343,24 +344,35 @@ def _build_more_view(
     grid.setColumnSpacing_(12.0)
     grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
     grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementLeading)
+    # Vertically centre the cells in each row so the labels line up
+    # with the centres of their controls (default is top-aligned).
+    grid.rowAtIndex_(0).setYPlacement_(NSGridCellPlacementCenter)
+    grid.rowAtIndex_(1).setYPlacement_(NSGridCellPlacementCenter)
 
-    # Center the grid in a full-width wrapper via Auto Layout. The
-    # previous attempts (flex spacers; addView:inGravity:Center) both
-    # left the grid hugging one edge — the wrapper-with-centerX
-    # constraint is the only approach that actually centres reliably.
-    wrapper = NSView.alloc().init()
-    wrapper.setTranslatesAutoresizingMaskIntoConstraints_(True)
-    grid.setTranslatesAutoresizingMaskIntoConstraints_(False)
-    wrapper.addSubview_(grid)
-    grid.centerXAnchor().constraintEqualToAnchor_(wrapper.centerXAnchor()).setActive_(True)
-    grid.topAnchor().constraintEqualToAnchor_(wrapper.topAnchor()).setActive_(True)
-    grid.bottomAnchor().constraintEqualToAnchor_(wrapper.bottomAnchor()).setActive_(True)
-    stack.addArrangedSubview_(wrapper)
+    # Centre the grid in the panel via a horizontal stack with
+    # equal-width flex spacers on both sides. Previous attempts
+    # (addView:inGravity:Center; wrapper with topAnchor+bottomAnchor)
+    # either snapped the grid to one edge or stretched its row heights
+    # on the second visit when the panel was re-parented. Equal-width
+    # spacers consistently centre the grid across all re-layouts.
+    table_row = NSStackView.alloc().init()
+    table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    table_row.setDistribution_(NSStackViewDistributionFill)
+    table_row.setSpacing_(0)
+    left_spacer = NSView.alloc().init()
+    right_spacer = NSView.alloc().init()
+    table_row.addArrangedSubview_(left_spacer)
+    table_row.addArrangedSubview_(grid)
+    table_row.addArrangedSubview_(right_spacer)
+    left_spacer.widthAnchor().constraintEqualToAnchor_(
+        right_spacer.widthAnchor()
+    ).setActive_(True)
+    stack.addArrangedSubview_(table_row)
 
     # Space above the grid (below "← Back"); tight space below the grid.
     try:
         stack.setCustomSpacing_afterView_(16.0, back_row)
-        stack.setCustomSpacing_afterView_(4.0, wrapper)
+        stack.setCustomSpacing_afterView_(4.0, table_row)
     except Exception:
         pass
 
