@@ -128,14 +128,14 @@ def _make_link_button(title: str, on_click, targets_out: list):
 
     Visually distinct from the bezel-style action buttons so the user
     reads it as a navigation control, not an action. Uses the system
-    `linkColor` and an underline on the title.
+    `linkColor` at the regular system font size — no underline (cleaner
+    look at larger size).
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
         NSColor,
         NSFont,
         NSForegroundColorAttributeName,
-        NSUnderlineStyleAttributeName,
     )
     from Foundation import (  # type: ignore[import-not-found]
         NSMakeRange,
@@ -144,11 +144,10 @@ def _make_link_button(title: str, on_click, targets_out: list):
 
     btn = NSButton.buttonWithTitle_target_action_(title, None, None)
     btn.setBordered_(False)
-    btn.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    btn.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize()))
     attr = NSMutableAttributedString.alloc().initWithString_(title)
     full = NSMakeRange(0, len(title))
     attr.addAttribute_value_range_(NSForegroundColorAttributeName, NSColor.linkColor(), full)
-    attr.addAttribute_value_range_(NSUnderlineStyleAttributeName, 1, full)
     btn.setAttributedTitle_(attr)
     target = _PyCallbackTarget.alloc().initWithCallable_(on_click)
     targets_out.append(target)
@@ -157,26 +156,29 @@ def _make_link_button(title: str, on_click, targets_out: list):
     return btn
 
 
-def _build_default_view(ak, on_open_gui, on_show_more, targets_out: list):
+def _build_default_view(
+    ak, on_open_local_gui, on_open_saves_site, on_show_more, targets_out: list
+):
     """Build the Default panel.
 
     Layout (top to bottom):
         Status (●  Running)
-        Open GUI button
-        [spacer pushing the link to the bottom]
-        ─ horizontal row ─
-        | <flex>             More → (link, right-aligned) |
+        [breathing room]
+        Open BSky Saves (centered label)
+        [Local GUI]   [saves.lightseed.net]
+        [<flex>]                   More → (link, right)
 
     Returns (root_view, status_label, _unused_, _unused_) — keeps the
-    signature shape from the previous version so the caller doesn't
-    need to be rewritten. The copy-token control moved to the More
-    panel in this revision.
+    signature shape so the construct() caller doesn't need a wider
+    rewrite. The copy-token control moved to the More panel.
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
         NSFont,
         NSStackView,
         NSStackViewDistributionFill,
+        NSStackViewDistributionFillEqually,
+        NSTextAlignmentCenter,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
@@ -186,25 +188,54 @@ def _build_default_view(ak, on_open_gui, on_show_more, targets_out: list):
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
-    # Reduced spacing — the user wanted less air between the status
-    # row and the Open GUI button.
-    stack.setSpacing_(4.0)
-    stack.setEdgeInsets_((6, 12, 8, 12))  # T L B R
+    stack.setSpacing_(6.0)
+    stack.setEdgeInsets_((6, 12, 8, 12))
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     stack.addArrangedSubview_(status_label)
 
-    open_gui_button = NSButton.buttonWithTitle_target_action_("Open GUI", None, None)
-    open_gui_button.setBezelStyle_(1)
-    open_gui_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_gui)
-    targets_out.append(open_gui_target)
-    open_gui_button.setTarget_(open_gui_target)
-    open_gui_button.setAction_("invoke:")
-    stack.addArrangedSubview_(open_gui_button)
+    # "Open BSky Saves" section header, centered.
+    open_header = NSTextField.labelWithString_("Open BSky Saves")
+    open_header.setAlignment_(NSTextAlignmentCenter)
+    open_header.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize()))
+    stack.addArrangedSubview_(open_header)
 
-    # Bottom-right "More" navigation link inside a horizontal row with a
-    # flex spacer on the left so the link is pushed to the right edge.
+    # Two side-by-side buttons under the header.
+    open_row = NSStackView.alloc().init()
+    open_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    open_row.setDistribution_(NSStackViewDistributionFillEqually)
+    open_row.setSpacing_(8.0)
+
+    local_gui_button = NSButton.buttonWithTitle_target_action_("Local GUI", None, None)
+    local_gui_button.setBezelStyle_(1)
+    local_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_local_gui)
+    targets_out.append(local_target)
+    local_gui_button.setTarget_(local_target)
+    local_gui_button.setAction_("invoke:")
+    open_row.addArrangedSubview_(local_gui_button)
+
+    saves_site_button = NSButton.buttonWithTitle_target_action_(
+        "saves.lightseed.net", None, None
+    )
+    saves_site_button.setBezelStyle_(1)
+    saves_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_saves_site)
+    targets_out.append(saves_target)
+    saves_site_button.setTarget_(saves_target)
+    saves_site_button.setAction_("invoke:")
+    open_row.addArrangedSubview_(saves_site_button)
+
+    stack.addArrangedSubview_(open_row)
+
+    # Add breathing room between the status line and the Open header,
+    # and between the buttons row and the More link.
+    try:
+        stack.setCustomSpacing_afterView_(12.0, status_label)
+        stack.setCustomSpacing_afterView_(12.0, open_row)
+    except Exception:
+        pass
+
+    # Bottom-right More link.
     more_row = NSStackView.alloc().init()
     more_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     more_row.setSpacing_(0)
@@ -214,16 +245,8 @@ def _build_default_view(ak, on_open_gui, on_show_more, targets_out: list):
     more_row.addArrangedSubview_(more_link)
     stack.addArrangedSubview_(more_row)
 
-    # Give a bit of breathing room above the More row.
-    try:
-        stack.setCustomSpacing_afterView_(10.0, open_gui_button)
-    except Exception:
-        pass
+    stack.setFrame_(((0, 0), (300, 150)))
 
-    stack.setFrame_(((0, 0), (260, 110)))
-
-    # Keep a stable return signature; copy_button + default_title slots
-    # are filled with None because copy moved to the More panel.
     return stack, status_label, None, None
 
 
@@ -258,6 +281,9 @@ def _build_more_view(
         NSControlStateValueOff,
         NSControlStateValueOn,
         NSFont,
+        NSGridCellPlacementLeading,
+        NSGridCellPlacementTrailing,
+        NSGridView,
         NSStackView,
         NSStackViewDistributionFill,
         NSSwitch,
@@ -284,12 +310,10 @@ def _build_more_view(
     back_row.addArrangedSubview_(back_spacer)
     stack.addArrangedSubview_(back_row)
 
-    # Pairing-token row: "Pairing Token:" label + [Copy] button.
-    pairing_row = NSStackView.alloc().init()
-    pairing_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    pairing_row.setSpacing_(8.0)
+    # Two-row, two-column table: labels in left column, controls in
+    # right column. NSGridView gives us proper column alignment for
+    # free.
     pairing_label = NSTextField.labelWithString_("Pairing Token:")
-    pairing_row.addArrangedSubview_(pairing_label)
     copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
     copy_button_default_title = "Copy"
     copy_button.setBezelStyle_(1)
@@ -297,25 +321,8 @@ def _build_more_view(
     targets_out.append(copy_target)
     copy_button.setTarget_(copy_target)
     copy_button.setAction_("invoke:")
-    pairing_row.addArrangedSubview_(copy_button)
-    pairing_spacer = NSView.alloc().init()
-    pairing_row.addArrangedSubview_(pairing_spacer)
-    stack.addArrangedSubview_(pairing_row)
 
-    # Horizontal separator below pairing row.
-    separator = NSBox.alloc().init()
-    separator.setBoxType_(NSBoxSeparator)
-    separator.setFrame_(((0, 0), (236, 1)))
-    stack.addArrangedSubview_(separator)
-
-    # Start-at-login row: label on the left, switch on the right.
-    sal_row = NSStackView.alloc().init()
-    sal_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    sal_row.setSpacing_(8.0)
-    sal_label = NSTextField.labelWithString_("Start at login")
-    sal_row.addArrangedSubview_(sal_label)
-    sal_spacer = NSView.alloc().init()
-    sal_row.addArrangedSubview_(sal_spacer)
+    sal_label = NSTextField.labelWithString_("Start at login:")
     start_at_login_switch = NSSwitch.alloc().init()
     start_at_login_switch.setState_(
         NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
@@ -328,12 +335,42 @@ def _build_more_view(
     targets_out.append(start_at_login_target)
     start_at_login_switch.setTarget_(start_at_login_target)
     start_at_login_switch.setAction_("invoke:")
-    sal_row.addArrangedSubview_(start_at_login_switch)
-    stack.addArrangedSubview_(sal_row)
 
-    # Breathing room above Quit.
+    grid = NSGridView.gridViewWithViews_(
+        [
+            [pairing_label, copy_button],
+            [sal_label, start_at_login_switch],
+        ]
+    )
+    grid.setRowSpacing_(8.0)
+    grid.setColumnSpacing_(12.0)
+    # Left column (labels) trailing-aligned, right column (controls)
+    # leading-aligned — matches the user's "labels column / controls
+    # column" intent.
+    grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
+    grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementLeading)
+
+    # Center the whole table in the panel via a horizontal row with
+    # flex spacers on both sides.
+    table_row = NSStackView.alloc().init()
+    table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    table_row.setSpacing_(0)
+    table_left_spacer = NSView.alloc().init()
+    table_right_spacer = NSView.alloc().init()
+    table_row.addArrangedSubview_(table_left_spacer)
+    table_row.addArrangedSubview_(grid)
+    table_row.addArrangedSubview_(table_right_spacer)
+    stack.addArrangedSubview_(table_row)
+
+    # Horizontal separator after the table.
+    separator = NSBox.alloc().init()
+    separator.setBoxType_(NSBoxSeparator)
+    separator.setFrame_(((0, 0), (236, 1)))
+    stack.addArrangedSubview_(separator)
+
+    # Breathing room between the separator and Quit.
     try:
-        stack.setCustomSpacing_afterView_(20.0, sal_row)
+        stack.setCustomSpacing_afterView_(20.0, separator)
     except Exception:
         pass
 
@@ -672,7 +709,8 @@ class StatusPopover:
 
         default_root, status_label, _unused1, _unused2 = _build_default_view(
             ak,
-            on_open_gui=self._on_open_gui,
+            on_open_local_gui=self._on_open_gui,
+            on_open_saves_site=self._on_open_saves_site,
             on_show_more=self._on_show_more,
             targets_out=self._button_targets,
         )
@@ -776,6 +814,11 @@ class StatusPopover:
         from bsky_saves_launcher.tray import _open_or_focus_gui
 
         _open_or_focus_gui()
+
+    def _on_open_saves_site(self) -> None:
+        import webbrowser
+
+        webbrowser.open("https://saves.lightseed.net/")
 
     def _on_copy_token(self) -> None:
         from bsky_saves_launcher.clipboard import ClipboardError, copy_to_clipboard
