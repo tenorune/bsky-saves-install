@@ -278,6 +278,8 @@ def _build_more_view(
         NSGridCellPlacementLeading,
         NSGridCellPlacementTrailing,
         NSGridView,
+        NSLayoutAttributeTop,
+        NSLayoutConstraintOrientationVertical,
         NSStackView,
         NSStackViewDistributionFill,
         NSSwitch,
@@ -359,6 +361,11 @@ def _build_more_view(
     table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     table_row.setDistribution_(NSStackViewDistributionFill)
     table_row.setSpacing_(0)
+    # Anchor grid to the top of whatever vertical space the outer stack
+    # allocates to this row. Without this, on the second More-panel
+    # visit the row got allocated extra height and the grid floated
+    # down to the bottom, almost touching the separator.
+    table_row.setAlignment_(NSLayoutAttributeTop)
     left_spacer = NSView.alloc().init()
     right_spacer = NSView.alloc().init()
     table_row.addArrangedSubview_(left_spacer)
@@ -367,6 +374,12 @@ def _build_more_view(
     left_spacer.widthAnchor().constraintEqualToAnchor_(
         right_spacer.widthAnchor()
     ).setActive_(True)
+    # Tell the outer stack not to stretch this row vertically. Combined
+    # with the top-alignment above, this keeps the grid's vertical
+    # position stable across re-layouts.
+    table_row.setContentHuggingPriority_forOrientation_(
+        1000, NSLayoutConstraintOrientationVertical
+    )
     stack.addArrangedSubview_(table_row)
 
     # Space above the grid (below "← Back"); tight space below the grid.
