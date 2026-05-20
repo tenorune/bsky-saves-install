@@ -175,7 +175,6 @@ def _build_default_view(
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
         NSFont,
-        NSFontAttributeName,
         NSStackView,
         NSStackViewDistributionFill,
         NSTextAlignmentCenter,
@@ -184,36 +183,22 @@ def _build_default_view(
         NSUserInterfaceLayoutOrientationVertical,
         NSView,
     )
-    from Foundation import (  # type: ignore[import-not-found]
-        NSMakeRange,
-        NSMutableAttributedString,
-    )
 
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
     stack.setSpacing_(8.0)
-    stack.setEdgeInsets_((6, 12, 8, 12))
+    stack.setEdgeInsets_((6, 12, 2, 12))  # tight bottom inset
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     stack.addArrangedSubview_(status_label)
 
-    # "Open BSky Saves" header — "BSky Saves" in bold.
-    open_header = NSTextField.labelWithString_("Open BSky Saves")
+    # "BSky Saves" header, all bold, centered.
+    open_header = NSTextField.labelWithString_("BSky Saves")
     open_header.setAlignment_(NSTextAlignmentCenter)
-    header_text = "Open BSky Saves"
-    header_attr = NSMutableAttributedString.alloc().initWithString_(header_text)
-    regular_font = NSFont.systemFontOfSize_(NSFont.systemFontSize())
     bold_font = NSFont.boldSystemFontOfSize_(NSFont.systemFontSize())
-    header_attr.addAttribute_value_range_(
-        NSFontAttributeName, regular_font, NSMakeRange(0, len(header_text))
-    )
-    # "BSky Saves" starts at offset 5 ("Open "), length 10.
-    header_attr.addAttribute_value_range_(NSFontAttributeName, bold_font, NSMakeRange(5, 10))
-    # Re-apply center alignment on the attributed string.
-    open_header.setAttributedStringValue_(header_attr)
-    open_header.setAlignment_(NSTextAlignmentCenter)
+    open_header.setFont_(bold_font)
     stack.addArrangedSubview_(open_header)
 
     # Local GUI and saves.lightseed.net — each on its own line.
@@ -235,11 +220,11 @@ def _build_default_view(
     saves_site_button.setAction_("invoke:")
     stack.addArrangedSubview_(saves_site_button)
 
-    # More space between status and the Open header; little space
-    # between the buttons; more breathing room before the bottom link.
+    # More space between status and the header; tight space between
+    # the bottom button and the More link.
     try:
         stack.setCustomSpacing_afterView_(20.0, status_label)
-        stack.setCustomSpacing_afterView_(12.0, saves_site_button)
+        stack.setCustomSpacing_afterView_(4.0, saves_site_button)
     except Exception:
         pass
 
@@ -253,7 +238,7 @@ def _build_default_view(
     more_row.addArrangedSubview_(more_link)
     stack.addArrangedSubview_(more_row)
 
-    stack.setFrame_(((0, 0), (300, 200)))
+    stack.setFrame_(((0, 0), (300, 180)))
 
     return stack, status_label, None, None
 
@@ -294,7 +279,6 @@ def _build_more_view(
         NSGridView,
         NSStackView,
         NSStackViewDistributionFill,
-        NSStackViewGravityCenter,
         NSSwitch,
         NSTextAlignmentCenter,
         NSTextField,
@@ -321,10 +305,15 @@ def _build_more_view(
 
     # Two-row, two-column table: labels in left column, controls in
     # right column. NSGridView gives us proper column alignment.
-    pairing_label = NSTextField.labelWithString_("Pairing Token")
+    pairing_label = NSTextField.labelWithString_("Pairing token")
     copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
     copy_button_default_title = "Copy"
     copy_button.setBezelStyle_(1)
+    # Pin the Copy button to a width that accommodates its widest
+    # transient title ("No token yet"). Without this, NSGridView's
+    # right column resizes on each flash, shifting the whole grid.
+    copy_button.setTranslatesAutoresizingMaskIntoConstraints_(False)
+    copy_button.widthAnchor().constraintEqualToConstant_(110.0).setActive_(True)
     copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
     targets_out.append(copy_target)
     copy_button.setTarget_(copy_target)
@@ -355,19 +344,23 @@ def _build_more_view(
     grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
     grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementLeading)
 
-    # Center the grid in the panel. NSStackView with addView:inGravity:
-    # NSStackViewGravityCenter places the grid in the centre of the
-    # row regardless of intrinsic content size — no need for flex
-    # spacers (which didn't actually centre the previous layout).
-    table_row = NSStackView.alloc().init()
-    table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    table_row.setSpacing_(0)
-    table_row.addView_inGravity_(grid, NSStackViewGravityCenter)
-    stack.addArrangedSubview_(table_row)
+    # Center the grid in a full-width wrapper via Auto Layout. The
+    # previous attempts (flex spacers; addView:inGravity:Center) both
+    # left the grid hugging one edge — the wrapper-with-centerX
+    # constraint is the only approach that actually centres reliably.
+    wrapper = NSView.alloc().init()
+    wrapper.setTranslatesAutoresizingMaskIntoConstraints_(True)
+    grid.setTranslatesAutoresizingMaskIntoConstraints_(False)
+    wrapper.addSubview_(grid)
+    grid.centerXAnchor().constraintEqualToAnchor_(wrapper.centerXAnchor()).setActive_(True)
+    grid.topAnchor().constraintEqualToAnchor_(wrapper.topAnchor()).setActive_(True)
+    grid.bottomAnchor().constraintEqualToAnchor_(wrapper.bottomAnchor()).setActive_(True)
+    stack.addArrangedSubview_(wrapper)
 
-    # Space above the grid (below "← Back").
+    # Space above the grid (below "← Back"); tight space below the grid.
     try:
         stack.setCustomSpacing_afterView_(16.0, back_row)
+        stack.setCustomSpacing_afterView_(4.0, wrapper)
     except Exception:
         pass
 
