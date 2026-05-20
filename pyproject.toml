@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bsky-saves-launcher"
-version = "0.1.0"
+version = "0.3.0"
 description = "Menu-bar launcher that supervises bsky-saves serve for the bsky-saves-install macOS app."
 requires-python = ">=3.11"
 authors = [{ name = "tenorune" }]
