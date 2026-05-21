@@ -1,0 +1,167 @@
+# Installer status panel — resolved-questions archive
+
+> **Companion to:** [`installer-status-panel.md`](./installer-status-panel.md). Holds closed questions and their resolutions as a design-rationale archive.
+> **Convention:** entries are append-only. Don't edit a resolved entry's text; if a decision is revisited, log a new entry with cross-references.
+> **Workflow:** when a question in the main doc's §7 closes, its content moves here (renamed `R<n>`) and the resolution gets folded into the main doc's body (or §4.x as applicable). The main doc's body references back here via `(see R<n>)` when the rationale matters.
+
+---
+
+## R1 — Push trigger set
+
+**Raised by:** CLI (2026-05-17) as §7 Q1.
+**Resolved by:** GUI (2026-05-18) in §4.3.
+
+**Question:** What triggers a status push from the GUI? End of every successful fetch + every hydrate cycle is the obvious set. Should the GUI also push on idle-tick, on unpair / clear-data events, on backup-toggle changes?
+
+**Resolution:** Required triggers documented in §4.3:
+- Successful fetch
+- Each per-asset hydration phase complete
+- Toggle on/off for any of {threads, images, articles}
+- Sign-in (initial snapshot carrying the new DID)
+- "Clear all data" — sends `DELETE /status` rather than a regular push
+
+Plus, in session mode only:
+- Idle heartbeat at ~15s cadence to keep the helper's TTL alive
+
+Plus, recommended in persist mode (added by R8's coalesced-flush model):
+- `beforeunload` push with `priority: "final"` so the helper synchronously flushes pre-tab-close state to disk
+
+Sign-out is explicitly NOT a trigger (it stops the push loop but doesn't clear; see R5).
+
+---
+
+## R2 — Payload contents
+
+**Raised by:** CLI (2026-05-17) as §7 Q2.
+**Resolved by:** GUI (2026-05-18) in §4.4.
+
+**Question:** What's in the payload? The §4.4 starter set is a proposal. The GUI team owns the final field list.
+
+**Resolution:** §4.4 of the main doc holds the final phase-1 shape. GUI additions over the CLI's starter set:
+- `current_state` ∈ `{"idle", "refreshing", "hydrating", "error"}` — gives the panel a live signal without inferring from `last_activity.finished_at`.
+- `storage.session_ttl_seconds` — pairs with `storage.mode === "session"` to advertise the helper TTL value the GUI is choosing.
+- `last_activity.errors` clarified to `{kind, message, count}` object shape rather than an unspecified array.
+
+Subsequently (R8) added:
+- Optional top-level `priority` string field; `"final"` triggers the helper's persist-mode synchronous-flush path.
+
+Any future additions follow the `schema_version` bump rules in §4.4 notes plus the §4.7 sensitivity-check-at-PR-time gate.
+
+---
+
+## R3 — Multiple GUI sessions on one helper
+
+**Raised by:** CLI (2026-05-17) as §7 Q3.
+**Resolved by:** Joint (2026-05-18) — GUI ratified what CLI proposed.
+
+**Question:** Multi-browser users (or maintainer-style multi-account setups) push to the same helper. Last-write-wins vs. keyed by `did`.
+
+**Resolution:** Phase 1: last-write-wins, single-slot. The payload always carries `library.did` for forward-compat. Phase 3 (multi-handle / CLI-inventory work) layers per-DID indexing on top without a contract break — `GET /status?did=...` or a list-shaped response are both available as later extensions.
+
+---
+
+## R4 — Pyodide-fallback mode
+
+**Raised by:** CLI (2026-05-17) as §7 Q4.
+**Resolved by:** CLI (2026-05-17) in §4.3.
+
+**Question:** GUI in Pyodide-fallback mode (no helper to push to).
+
+**Resolution:** Status push is skipped. The panel — if anyone is viewing it via the bundled-GUI / installer flow — displays last-known status from the prior paired session, with a stale timestamp surfacing the staleness. Documented limitation; not a bug.
+
+---
+
+## R5 — Clear-path semantics: only "Clear all data", not sign-out
+
+**Raised by:** GUI (2026-05-18) during scope refinement.
+**Resolved by:** Joint (2026-05-18).
+
+**Question:** Initial GUI proposal treated both sign-out and "Clear all data" as triggers for `DELETE /status`. Tenorune corrected: in the GUI, sign-out preserves local library data; only "Clear all data" wipes it.
+
+**Resolution:** Only "Clear all data" sends `DELETE /status`. Sign-out stops the push loop without clearing. The helper's response per mode:
+- **Persist mode after sign-out**: snapshot stays on disk. Panel keeps showing it until "Clear all data" or a new sign-in with a different DID overwrites it.
+- **Session mode after sign-out**: heartbeats stop, TTL fires within ~60s, helper drops the in-memory snapshot, panel goes blank.
+
+This mirrors the GUI's own persist/session contract: the user's local library outlives sign-out in persist mode, and is transient in session mode. The helper snapshot's lifecycle tracks that exactly.
+
+---
+
+## R6 — Push debouncing rate
+
+**Raised by:** GUI (2026-05-18) as §7 Q5.
+**Resolved by:** Joint (2026-05-20) — GUI ratified CLI's confirmation.
+
+**Question:** GUI proposed max one push per 500ms. CLI team: does this match what the helper's HTTP stack can comfortably handle, or should the floor be tighter (250ms / 1s)?
+
+**Resolution:** **500ms locked** as the contract floor. CLI confirmed (2026-05-18) the helper can comfortably handle pushes at 10–100/sec — `ThreadingHTTPServer` per-thread, per-request work is sub-millisecond — so 500ms is generous. CLI noted the GUI could tighten to 250ms later for snappier panel feedback during hydration bursts without breaking the contract; the 500ms documented in §4.3 is a floor, not a target. GUI implementation will use 500ms initially and reassess only if panel UX feels laggy.
+
+---
+
+## R7 — Session-mode heartbeat cadence and TTL
+
+**Raised by:** GUI (2026-05-18) as §7 Q6.
+**Resolved by:** Joint (2026-05-20) — GUI ratified CLI's confirmation.
+
+**Question:** GUI proposed 15s heartbeat / 60s TTL (4× safety margin against a single missed push). CLI team: any preference on the TTL value?
+
+**Resolution:** **15s heartbeat / 60s TTL locked.** CLI confirmed (2026-05-18) the helper's implementation is lazy expiry — `now() vs memory_expires_at` comparison on each `GET /status`; no background timer — so any TTL value is equally cheap on the helper side. The number is anchored by panel UX intuition ("tab probably closed by now"), not by helper performance. 60s is the published value; the heartbeat must remain ≤ TTL/3 to survive a single missed push (15s satisfies this). The TTL value is in the payload (`storage.session_ttl_seconds`), so future tuning is a payload-only change.
+
+---
+
+## R8 — Persist-mode disk-write frequency
+
+**Raised by:** GUI (2026-05-18) as §7 Q7.
+**Resolved by:** Joint (2026-05-20) — GUI adopted CLI's coalesced-flush proposal.
+
+**Question:** Per §4.2, the helper atomic-writes to disk on every persist-mode push. For a heavy hydration phase (~2 pushes/second from §4.3 debouncer) that's a lot of disk writes. Coalesce, or keep per-push?
+
+**Resolution:** **Coalesced background flush** per CLI's proposal:
+
+- In-memory snapshot updates immediately on every `POST /status` (so `GET /status` always sees the latest).
+- Disk flush happens at most once per second via a debounced background task that observes the in-memory snapshot.
+- GUI can send `priority: "final"` (new optional top-level string in the §4.4 payload) to bypass the coalescer and flush immediately — used on `beforeunload` so terminal state lands on disk before tab close. GUI implementation uses `navigator.sendBeacon()` or `fetch({keepalive: true})` because the unload event doesn't reliably await async work.
+- Helper shutdown (SIGTERM / Ctrl-C) synchronously flushes the latest in-memory snapshot to disk before exiting.
+
+Tradeoff accepted: up to ~1s of staleness on crash (the in-memory state ahead of disk by at most one debounce window). The phase-1 contract does not promise crash-recovery freshness beyond the pre-push value.
+
+GUI design call on `priority`: defined as a string enum, not a boolean, so future priorities (`"low"` for non-essential idle heartbeats, etc.) can be added without a schema bump.
+
+Implementation note for the helper: the per-write tmp-name concurrency hazard CLI flagged in §4.2 (the broader inventory-writer's single-tmp scheme racing under multi-threaded writes) is sidestepped naturally by the single background flush task. Per-write tmp names called out in §4.2 as defense-in-depth.
+
+---
+
+## R9 — Resolved-questions archive companion file missing
+
+**Raised by:** CLI (2026-05-18) as §7 Q9.
+**Resolved by:** GUI (2026-05-20) — pushed companion file in the same PR as this revision.
+
+**Question:** §4.2, §4.3, §6, and other sections backlink to `R3`/`R4`/`R5` in `installer-status-panel-resolved.md`, but that file was not present at the coord repo's `main` (raw URL returned 404). The GUI revision's changelog said "resolved appendix seeded with R1–R5" but the companion file wasn't included in the merged version.
+
+**Resolution:** Root cause was the original coordination workflow being single-file per run; the GUI's first push only carried `installer-status-panel.md`, not its companion. The workflow has since been upgraded (2026-05-20) to a manifest-driven model that PRs an arbitrary file list in a single PR. The GUI's 2026-05-20 revision includes both files in one PR via that mechanism, closing the gap.
+
+Process forward: any future revision that touches both files will include both in the manifest. Workflow drift between the body's `(see R<n>)` backlinks and the appendix's presence is now mechanically prevented — the manifest review during PR is where any mismatch surfaces.
+
+---
+
+## R10 — Installer poll cadence
+
+**Raised by:** GUI (2026-05-18) as §7 Q8.
+**Resolved by:** Installer (2026-05-21) in §4.5.
+
+**Question:** §4.5 suggests ≤ once per 5 seconds. Installer team: what cadence works best with idle-friendly power management on macOS / Windows? Slower polls (e.g., 10s) are friendlier to battery; faster (1–2s) feels more "live" to the user. Or: switch cadence based on whether the panel is currently visible / focused?
+
+**Resolution:** **Visibility-gated polling, 5s cadence.**
+
+- One `GET /status` immediately on popover show — hydrates the panel without waiting for the first tick.
+- Every 5 seconds while the popover remains visible.
+- No polling while the popover is closed.
+
+Rationale:
+
+- **Why 5s, not faster or slower.** The installer already runs a 5s `Supervisor.is_alive()` + `/ping` health-poll timer (the one that drives the red menu-bar state badge when the helper is unresponsive / in port conflict). Co-fetching `/status` on the same tick means no second timer, no extra wake-ups for the power-management subsystem to reason about — one consolidated 5s heartbeat that runs while the popover is visible. 5s sits comfortably under R7's 15s heartbeat / 60s TTL window: the panel observes fresh GUI pushes within ≤5s of arrival, and observes session-mode TTL expiry (the 404 transition) within ≤5s of it happening. A faster cadence (1–2s) would feel marginally more "live" but consume battery for sub-perceptual gains; a slower cadence (10s) would risk the panel showing stale data through a TTL-expiry transition for up to half the TTL window. 5s is the sweet spot.
+
+- **Why visibility-gated.** The panel renders only when the popover is visible. Polling while it's closed produces no observable effect — the user can't see what the panel would draw. On a battery-powered laptop with the popover closed for hours at a time, eliding the poll entirely keeps the launcher CPU-idle and lets macOS's app-nap and Windows's modern-standby paths do their thing without an HTTP-poll loop preventing deeper sleep states. NSPopover's `popoverWillShow:` / `popoverWillClose:` delegate methods on macOS are the start/stop signals; equivalent platform hooks will drive this on Windows / Linux when those installer ports land.
+
+- **Why not focus-gated instead.** A focused-popover-only variant (poll only when the user has the popover focused) was considered and rejected: a transient popover loses focus the moment the user moves attention elsewhere on screen, but stays *visible* until it's dismissed by click-outside. Halting polling on focus-loss would freeze the panel during the user's most likely look-at moments (popover open, user reading the values while their attention's already drifted to the next thing).
+
+Implementation note (informational, not contract): the installer's existing health poll timer lives in `bsky_saves_launcher.tray.TrayApp`; the status fetch will be added there. The popover's `popoverWillShow:` schedules an immediate fetch and `popoverWillClose:` clears the next-fetch timestamp. No change to the panel's existing auth flow — the same bearer token is reused.

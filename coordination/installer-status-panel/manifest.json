@@ -1,0 +1,7 @@
+{
+  "title": "Installer revision: Q8 (poll cadence) resolved + R10 archived + §4.5 staleness threshold pinned",
+  "files": [
+    { "source": "coordination/installer-status-panel/installer-status-panel.md",          "target": "docs/installer-status-panel.md" },
+    { "source": "coordination/installer-status-panel/installer-status-panel-resolved.md", "target": "docs/installer-status-panel-resolved.md" }
+  ]
+}
