@@ -30,6 +30,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from bsky_saves_launcher.status import StatusSnapshot
     from bsky_saves_launcher.supervisor import Supervisor
 
 
@@ -157,7 +158,12 @@ def _make_link_button(title: str, on_click, targets_out: list):
 
 
 def _build_default_view(
-    ak, on_open_local_gui, on_open_saves_site, on_show_more, targets_out: list
+    ak,
+    on_open_local_gui,
+    on_open_saves_site,
+    on_show_library,
+    on_show_more,
+    targets_out: list,
 ):
     """Build the Default panel.
 
@@ -166,11 +172,14 @@ def _build_default_view(
         [breathing room]
         Open BSky Saves (centered label)
         [Local GUI]   [saves.lightseed.net]
-        [<flex>]                   More → (link, right)
+        Library → (link, left)  [<flex>]  More → (link, right)
 
-    Returns (root_view, status_label, _unused_, _unused_) — keeps the
-    signature shape so the construct() caller doesn't need a wider
-    rewrite. The copy-token control moved to the More panel.
+    Returns (root_view, status_label, _unused_, _unused_, library_link) —
+    keeps the leading-shape stable so the construct() caller's existing
+    destructuring needs minimal change. The copy-token control moved to
+    the More panel. `library_link` is exposed so the popover owner can
+    re-style it via `_update_default_library_link` when snapshot state
+    changes.
     """
     from AppKit import (  # type: ignore[import-not-found]
         NSButton,
@@ -228,19 +237,223 @@ def _build_default_view(
     except Exception:
         pass
 
-    # Bottom-right More link.
-    more_row = NSStackView.alloc().init()
-    more_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    more_row.setSpacing_(0)
-    spacer = NSView.alloc().init()
-    more_row.addArrangedSubview_(spacer)
+    # Bottom row: "Library →" on the left, flex spacer, "More →" on the
+    # right. Both are link-styled (borderless, linkColor) — distinct from
+    # the bezel-style action buttons above so the user reads them as
+    # navigation rather than actions.
+    nav_row = NSStackView.alloc().init()
+    nav_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    nav_row.setDistribution_(NSStackViewDistributionFill)
+    nav_row.setSpacing_(0)
+    library_link = _make_link_button("Library →", on_show_library, targets_out)
+    nav_row.addArrangedSubview_(library_link)
+    nav_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
     more_link = _make_link_button("More →", on_show_more, targets_out)
-    more_row.addArrangedSubview_(more_link)
-    stack.addArrangedSubview_(more_row)
+    nav_row.addArrangedSubview_(more_link)
+    stack.addArrangedSubview_(nav_row)
 
     stack.setFrame_(((0, 0), (300, 180)))
 
-    return stack, status_label, None, None
+    # 4th and 5th slots are legacy / future hooks; kept as None to preserve
+    # the construct() caller's destructuring shape. `library_link` is the
+    # new addition so the popover owner can re-style it (e.g. grey-out
+    # when there's no library snapshot) via _update_default_library_link.
+    return stack, status_label, None, None, library_link
+
+
+def _build_library_view(ak, on_back, on_open_local_gui, targets_out: list):
+    """Build the Library panel.
+
+    Layout (top to bottom):
+        ← Back  (link, top-left)
+        ── content view (visible when snapshot is present) ──
+            handle (bold)
+            "last seen N min ago" (small, hidden if fresh)
+            "1,247 saves" (slightly larger)
+            "15 lost · 2 unsaved" (small; hidden if all zero / absent)
+            "Hydration" (section header; hidden if no rows present)
+            Articles ████░░ 973 / 1247
+            Threads  ███░░░ 412 / 1247
+            Images   ████░░ 856 / 1247
+            "Fetch · 2 min ago · +3 / −0" [spinner] [errors badge]
+        ── placeholder view (visible when snapshot is None / no handle) ──
+            "No active library status yet." (bold, centered)
+            "Open the BSky Saves GUI and let it sync once — it'll show up
+             here." (small, centered, wraps)
+            [ Open BSky Saves GUI ] button
+
+    Returns (root_view, handles_dict). The handles dict carries every
+    label, level indicator, spinner, button, and container the caller
+    needs to update at runtime via `_render_library_panel`.
+    """
+    from AppKit import (  # type: ignore[import-not-found]
+        NSBezelStyleRounded,
+        NSButton,
+        NSControlSizeSmall,
+        NSFont,
+        NSLevelIndicator,
+        NSLevelIndicatorStyleContinuousCapacity,
+        NSProgressIndicator,
+        NSProgressIndicatorStyleSpinning,
+        NSStackView,
+        NSStackViewDistributionFill,
+        NSTextAlignmentCenter,
+        NSTextField,
+        NSUserInterfaceLayoutOrientationHorizontal,
+        NSUserInterfaceLayoutOrientationVertical,
+        NSView,
+    )
+
+    stack = NSStackView.alloc().init()
+    stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    stack.setDistribution_(NSStackViewDistributionFill)
+    stack.setSpacing_(6.0)
+    stack.setEdgeInsets_((6, 12, 12, 12))
+
+    # Top-left "← Back" link.
+    back_row = NSStackView.alloc().init()
+    back_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    back_row.setSpacing_(0)
+    back_link = _make_link_button("← Back", on_back, targets_out)
+    back_row.addArrangedSubview_(back_link)
+    back_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
+    stack.addArrangedSubview_(back_row)
+
+    # --- content view (shown when snapshot has at least a handle) ---
+    content = NSStackView.alloc().init()
+    content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    content.setDistribution_(NSStackViewDistributionFill)
+    content.setSpacing_(4.0)
+
+    handle_label = NSTextField.labelWithString_("")
+    handle_label.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
+    content.addArrangedSubview_(handle_label)
+
+    staleness_label = NSTextField.labelWithString_("")
+    staleness_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    content.addArrangedSubview_(staleness_label)
+
+    total_label = NSTextField.labelWithString_("")
+    total_label.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1))
+    content.addArrangedSubview_(total_label)
+
+    retention_label = NSTextField.labelWithString_("")
+    retention_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    content.addArrangedSubview_(retention_label)
+
+    # Hydration section header + three pre-built rows. Each row is
+    # show/hidden per-snapshot in _render_library_panel based on which
+    # features the payload included.
+    hydration_section_label = NSTextField.labelWithString_("Hydration")
+    hydration_section_label.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize()))
+    content.addArrangedSubview_(hydration_section_label)
+    try:
+        content.setCustomSpacing_afterView_(12.0, retention_label)
+    except Exception:
+        pass
+
+    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
+    hydration_rows = []
+    for label_text in ("Articles", "Threads", "Images"):
+        row = NSStackView.alloc().init()
+        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+        row.setSpacing_(8.0)
+        lab = NSTextField.labelWithString_(label_text)
+        lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        bar = NSLevelIndicator.alloc().init()
+        try:
+            bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
+        except Exception:
+            pass
+        ratio = NSTextField.labelWithString_("")
+        ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        row.addArrangedSubview_(lab)
+        row.addArrangedSubview_(bar)
+        row.addArrangedSubview_(ratio)
+        content.addArrangedSubview_(row)
+        hydration_rows.append((lab, bar, ratio, row))
+
+    # Last-activity row: text label + (optional) spinner + (optional)
+    # errors badge button.
+    la_row = NSStackView.alloc().init()
+    la_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    la_row.setSpacing_(6.0)
+    last_activity_label = NSTextField.labelWithString_("")
+    last_activity_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    la_row.addArrangedSubview_(last_activity_label)
+    spinner = NSProgressIndicator.alloc().init()
+    try:
+        spinner.setStyle_(NSProgressIndicatorStyleSpinning)
+    except Exception:
+        pass
+    try:
+        spinner.setControlSize_(NSControlSizeSmall)
+    except Exception:
+        pass
+    spinner.setIndeterminate_(True)
+    spinner.setDisplayedWhenStopped_(False)
+    la_row.addArrangedSubview_(spinner)
+    errors_badge_button = NSButton.buttonWithTitle_target_action_("", None, None)
+    errors_badge_button.setBezelStyle_(NSBezelStyleRounded)
+    errors_badge_button.setHidden_(True)
+    la_row.addArrangedSubview_(errors_badge_button)
+    content.addArrangedSubview_(la_row)
+    try:
+        # Space above the last-activity row so it sits separately from
+        # the hydration bars.
+        content.setCustomSpacing_afterView_(12.0, hydration_rows[-1][3])
+    except Exception:
+        pass
+
+    stack.addArrangedSubview_(content)
+
+    # --- placeholder view (shown when snapshot is None or has no handle) ---
+    placeholder = NSStackView.alloc().init()
+    placeholder.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    placeholder.setDistribution_(NSStackViewDistributionFill)
+    placeholder.setSpacing_(8.0)
+    placeholder.setEdgeInsets_((12, 12, 12, 12))
+
+    headline = NSTextField.labelWithString_("No active library status yet.")
+    headline.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
+    headline.setAlignment_(NSTextAlignmentCenter)
+    body = NSTextField.labelWithString_(
+        "Open the BSky Saves GUI and let it sync once — it'll show up here."
+    )
+    body.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    body.setAlignment_(NSTextAlignmentCenter)
+    body.setUsesSingleLineMode_(False)
+    body.setMaximumNumberOfLines_(2)
+    open_gui_button = NSButton.buttonWithTitle_target_action_(
+        "Open BSky Saves GUI", None, None
+    )
+    open_gui_button.setBezelStyle_(NSBezelStyleRounded)
+    pl_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_local_gui)
+    targets_out.append(pl_target)
+    open_gui_button.setTarget_(pl_target)
+    open_gui_button.setAction_("invoke:")
+    placeholder.addArrangedSubview_(headline)
+    placeholder.addArrangedSubview_(body)
+    placeholder.addArrangedSubview_(open_gui_button)
+    placeholder.setHidden_(True)
+    stack.addArrangedSubview_(placeholder)
+
+    stack.setFrame_(((0, 0), (300, 300)))
+
+    return stack, {
+        "back_link": back_link,
+        "handle_label": handle_label,
+        "staleness_label": staleness_label,
+        "total_label": total_label,
+        "retention_label": retention_label,
+        "hydration_section_label": hydration_section_label,
+        "hydration_rows": hydration_rows,
+        "last_activity_label": last_activity_label,
+        "spinner": spinner,
+        "errors_badge_button": errors_badge_button,
+        "content": content,
+        "placeholder": placeholder,
+    }
 
 
 def _build_more_view(
@@ -598,6 +811,12 @@ class StatusPopover:
         self._version_label = None
         self._tray_button = None
         self._popover_delegate = None
+        # Library panel state (v0.4.0)
+        self._library_controller = None
+        self._library_view = None
+        self._library_handles = None
+        self._default_library_link = None
+        self._last_status_snapshot: StatusSnapshot | None = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -722,6 +941,10 @@ class StatusPopover:
             except Exception as exc:
                 print(f"[popover] frame-pin failed: {exc!r}", file=sys.stderr)
             self._start_refresh_timer(ak)
+            # Immediate-on-show /status fetch. The tray's existing 5s
+            # health tick takes over for subsequent refreshes while the
+            # popover stays open (see TrayApp._on_health_tick).
+            self._kick_status_fetch()
         except Exception as exc:
             import traceback
 
@@ -738,11 +961,25 @@ class StatusPopover:
         # here so the action selectors stay live across button clicks.
         self._button_targets = []
 
-        default_root, status_label, _unused1, _unused2 = _build_default_view(
+        (
+            default_root,
+            status_label,
+            _unused1,
+            _unused2,
+            default_library_link,
+        ) = _build_default_view(
             ak,
             on_open_local_gui=self._on_open_gui,
             on_open_saves_site=self._on_open_saves_site,
+            on_show_library=self._on_show_library,
             on_show_more=self._on_show_more,
+            targets_out=self._button_targets,
+        )
+        self._default_library_link = default_library_link
+        library_root, library_handles = _build_library_view(
+            ak,
+            on_back=self._on_back_to_default_from_library,
+            on_open_local_gui=self._on_open_gui,
             targets_out=self._button_targets,
         )
         more_root, start_switch, version_label, copy_button, copy_default_title = _build_more_view(
@@ -762,9 +999,12 @@ class StatusPopover:
         # a button). state=Active pins the appearance regardless of focus.
         default_root = _wrap_in_active_visual_effect(default_root)
         more_root = _wrap_in_active_visual_effect(more_root)
+        library_root = _wrap_in_active_visual_effect(library_root)
 
         self._default_view = default_root
         self._more_view = more_root
+        self._library_view = library_root
+        self._library_handles = library_handles
         self._status_label = status_label
         self._copy_button = copy_button
         self._copy_default_title = copy_default_title
@@ -787,9 +1027,18 @@ class StatusPopover:
         more_size = _view_size(more_root)
         if more_size is not None:
             more_controller.setPreferredContentSize_(more_size)
+        library_controller = ak["NSViewController"].alloc().init()
+        library_controller.setView_(library_root)
+        library_size = _view_size(library_root)
+        if library_size is not None:
+            library_controller.setPreferredContentSize_(library_size)
         self._default_controller = default_controller
         self._more_controller = more_controller
+        self._library_controller = library_controller
         self._content_controller = default_controller
+
+        # Initial link styling: no snapshot yet → grey Library link.
+        self._update_default_library_link()
 
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
@@ -896,6 +1145,220 @@ class StatusPopover:
             return
         self._animated_swap_controller(self._default_controller)
         self._content_controller = self._default_controller
+
+    def _on_show_library(self) -> None:
+        """Swap to the Library panel's view controller, animated.
+
+        Renders whatever the current cached snapshot says (placeholder
+        if no snapshot yet; populated content otherwise).
+        """
+        if self._popover is None or self._library_controller is None:
+            return
+        self._animated_swap_controller(self._library_controller)
+        self._content_controller = self._library_controller
+        self._render_library_panel()
+
+    def _on_back_to_default_from_library(self) -> None:
+        """Swap back to the Default panel from the Library panel."""
+        if self._popover is None or self._default_controller is None:
+            return
+        self._animated_swap_controller(self._default_controller)
+        self._content_controller = self._default_controller
+
+    def update_library(self, snapshot) -> None:
+        """Update the cached library snapshot and re-render relevant UI.
+
+        Callable from any thread that is the main thread (UI updates are
+        not thread-safe). The tray's 5s health tick marshals to the main
+        queue before calling this; popover's own _kick_status_fetch
+        worker thread does the same via _on_status_fetched.
+
+        Idempotent and safe to call before _construct has run — handles
+        are checked before use. Updates both the Library panel (if it's
+        the visible content) and the Default panel's "Library →" link
+        styling.
+        """
+        self._last_status_snapshot = snapshot
+        self._update_default_library_link()
+        if self._library_handles is None:
+            return
+        if self._content_controller is self._library_controller:
+            self._render_library_panel()
+
+    def _render_library_panel(self) -> None:
+        """Populate the Library panel from the cached snapshot.
+
+        Shows the 404 placeholder when there's no snapshot or no
+        identified library; otherwise hides the placeholder and renders
+        the data rows, hiding any sub-row whose payload field is absent.
+        """
+        h = self._library_handles
+        if h is None:
+            return
+        snap = self._last_status_snapshot
+
+        if snap is None or snap.library is None or snap.library.handle is None:
+            h["content"].setHidden_(True)
+            h["placeholder"].setHidden_(False)
+            return
+
+        h["placeholder"].setHidden_(True)
+        h["content"].setHidden_(False)
+
+        from bsky_saves_launcher import status as s
+
+        h["handle_label"].setStringValue_(snap.library.handle)
+
+        staleness = s.format_staleness(snap)
+        if staleness is None:
+            h["staleness_label"].setStringValue_("")
+            h["staleness_label"].setHidden_(True)
+        else:
+            h["staleness_label"].setStringValue_(staleness)
+            h["staleness_label"].setHidden_(False)
+
+        total = s.format_total_saves(snap)
+        h["total_label"].setStringValue_(total or "")
+        h["total_label"].setHidden_(total is None)
+
+        retention = s.format_retention(snap)
+        h["retention_label"].setStringValue_(retention or "")
+        h["retention_label"].setHidden_(retention is None)
+
+        rows_data = s.format_hydration_rows(snap)
+        # Show hydration section header only if at least one feature is
+        # present in the payload.
+        h["hydration_section_label"].setHidden_(len(rows_data) == 0)
+        for (_lab, bar, ratio, row), name in zip(
+            h["hydration_rows"], ["articles", "threads", "images"], strict=False
+        ):
+            match = next(
+                ((lbl, c, t) for lbl, c, t in rows_data if lbl.lower() == name),
+                None,
+            )
+            if match is None:
+                row.setHidden_(True)
+                continue
+            _, completed, total_v = match
+            row.setHidden_(False)
+            try:
+                bar.setMinValue_(0.0)
+                bar.setMaxValue_(float(total_v) if total_v > 0 else 1.0)
+                bar.setDoubleValue_(float(completed))
+            except Exception:
+                pass
+            ratio.setStringValue_(f"{completed:,} / {total_v:,}")
+
+        la_str = s.format_last_activity(snap)
+        h["last_activity_label"].setStringValue_(la_str or "")
+        h["last_activity_label"].setHidden_(la_str is None)
+
+        # Spinner visibility tracks current_state in-flight states.
+        try:
+            if snap.current_state in ("refreshing", "hydrating"):
+                h["spinner"].startAnimation_(None)
+            else:
+                h["spinner"].stopAnimation_(None)
+        except Exception:
+            pass
+
+        # Errors badge: visible only when last_activity carries errors.
+        errs = snap.last_activity.errors if snap.last_activity else []
+        if errs:
+            n = sum(e.count for e in errs)
+            label = "error" if n == 1 else "errors"
+            try:
+                h["errors_badge_button"].setTitle_(f"{n} {label}")
+                h["errors_badge_button"].setHidden_(False)
+                tip = "\n".join(f"{e.kind}: {e.message} (×{e.count})" for e in errs)
+                h["errors_badge_button"].setToolTip_(tip)
+            except Exception:
+                pass
+        else:
+            try:
+                h["errors_badge_button"].setHidden_(True)
+            except Exception:
+                pass
+
+    def _update_default_library_link(self) -> None:
+        """Style the Default panel's 'Library →' link based on whether
+        the cached snapshot has a populated library. Greys the title
+        (disabledControlTextColor) when there's nothing to render; uses
+        the normal link color otherwise. The link remains clickable in
+        both states — tapping a greyed link still navigates to the
+        Library panel, which renders the 404 placeholder.
+        """
+        link = self._default_library_link
+        if link is None:
+            return
+        snap = self._last_status_snapshot
+        has_data = (
+            snap is not None
+            and snap.library is not None
+            and snap.library.handle is not None
+        )
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSColor,
+                NSForegroundColorAttributeName,
+            )
+            from Foundation import (  # type: ignore[import-not-found]
+                NSMakeRange,
+                NSMutableAttributedString,
+            )
+
+            title = "Library →"
+            attr = NSMutableAttributedString.alloc().initWithString_(title)
+            color = NSColor.linkColor() if has_data else NSColor.disabledControlTextColor()
+            attr.addAttribute_value_range_(
+                NSForegroundColorAttributeName, color, NSMakeRange(0, len(title))
+            )
+            link.setAttributedTitle_(attr)
+        except Exception:
+            pass
+
+    def _kick_status_fetch(self) -> None:
+        """Immediate-on-show status fetch. Runs the blocking httpx call
+        on a daemon worker thread and marshals the result back to the
+        main thread via NSOperationQueue so the AppKit update happens
+        on the main runloop."""
+        import threading
+
+        def worker():
+            from bsky_saves_launcher import status as s
+            from bsky_saves_launcher import token as t
+
+            try:
+                tok = t.read_pairing_token()
+            except Exception:
+                tok = None
+            if not tok:
+                snap = None
+            else:
+                try:
+                    snap = s.fetch_status(token=tok)
+                except Exception:
+                    snap = None
+            self._on_status_fetched(snap)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_status_fetched(self, snapshot) -> None:
+        """Marshal a fetched snapshot back to the main thread for UI
+        update. Called from background worker threads."""
+        try:
+            from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+
+            NSOperationQueue.mainQueue().addOperationWithBlock_(
+                lambda: self.update_library(snapshot)
+            )
+        except Exception:
+            # Last-resort fallback — direct update. UI thread invariance
+            # may be violated; only reached if PyObjC isn't available.
+            try:
+                self.update_library(snapshot)
+            except Exception:
+                pass
 
     def _animated_swap_controller(self, controller) -> None:
         """Swap the popover's contentViewController and animate the size
