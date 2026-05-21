@@ -188,14 +188,11 @@ Visually:
 - **Size**: the icon visually matches the size of neighboring system icons (Wi-Fi, battery, Control Center). If our icon looks noticeably larger than its neighbors, the NSImage logical size isn't being set to 22pt — past regression (v0.2.0/v0.2.1 polish iteration).
 - **Alignment**: the icon is vertically centered in its menu-bar slot, not top- or bottom-aligned. If skewed, the source PNG's glyph bbox is off-center within the canvas.
 - **Light/dark adaptation**: toggle macOS Appearance between Light and Dark (System Settings → Appearance). The icon should remain readable on both. If it stays solid-black in dark mode (invisible against dark menu bar) or solid-white in light mode, the `setTemplate_` flag didn't stick — past regression (the flag has to be set from inside pystray's `setup=` callback, not directly after Icon construction).
-- A menu opens with these items in this order (v0.2.1+):
-  - **Show status…**
-  - **Open GUI**
-  - **Quit**
+- **State badge (v0.3.0+)**: when the helper is unresponsive / stopped / in port conflict, a small red dot overlays the bottom-right of the silhouette. When the helper is healthy or starting, no badge. To force a red badge: stop the helper externally (`pkill -f "bsky-saves serve"`); within ~5s the dot should appear. Re-launch the app to clear.
+- **Click behaviour (v0.3.0+)**: left-click on the icon opens the popover directly — there is no menu. Right-click and Control-click behave the same (popover open). If a context menu appears instead of the popover, `tray.py`'s NSEvent local monitor isn't intercepting the click — past regression.
+- **Selected state on click (v0.3.0+)**: while the popover is open the menu-bar icon stays visibly pressed (same as Apple's native menu-bar items). Click again to dismiss → icon returns to normal immediately.
 
-For pre-v0.2.1 builds, the menu also has **Copy pairing token** between Open GUI and Quit. That item was removed in v0.2.1 because the osascript-driven notification it produced has a "Show" button that opens Script Editor — the action belongs in the future popover button instead.
-
-If the menu is missing items or the order is wrong, `tray.py::run()`'s `pystray.Menu(...)` is out of sync.
+The pre-v0.3.0 pystray menu (`Show status…` / `Open GUI` / `Quit`) is gone — left-click opens the popover and Quit lives inside the popover's More panel.
 
 ### 5.4 Finder, Dock, App Switcher, Spotlight icon
 
@@ -210,11 +207,13 @@ If **only Finder shows the new icon** but Dock / App Switcher / Spotlight still 
 
 If **everything shows the bee**, `icon.icns` is missing from `src/bsky_saves_launcher/resources/` or `pyproject.toml`'s `icon = ...` line is wrong. Briefcase wants `.icns` specifically; `icon.iconset/` (a directory of sized PNGs) is **not** accepted on its own. Run `python scripts/build_icns.py` to generate, commit the result, rebuild.
 
-### 5.5 Open GUI
+### 5.5 Open GUI (v0.3.0+)
 
-Click the menu-bar icon → "Open GUI". A browser tab opens to `http://127.0.0.1:47826/`.
+Click the menu-bar icon → popover opens → click **Local GUI** in the "BSky Saves" section. A browser tab opens to `http://127.0.0.1:47826/`.
 
-Visually verify in the browser:
+Also click **saves.lightseed.net** — a browser tab opens to `https://saves.lightseed.net/` (the hosted PWA).
+
+Visually verify the Local GUI in the browser:
 - The bundled GUI loads (no error page, no 404, no "authentication required" JSON).
 - The GUI's chrome (header, navigation) appears.
 
@@ -234,18 +233,32 @@ If you see an error like:
 - **"Couldn't refresh — ... :ConnectError"** — `bsky_ssl_context()` in the bundled helper is failing cert verify. Past regression (bsky-saves 0.6.5; fixed in 0.6.6). Confirm `cat wheel-version.txt` matches a known-good version (≥ 0.6.6).
 - **"Couldn't refresh — ... :401"** — credentials issue, not an installer issue. Mint a fresh app password.
 
-### 5.7 Show status (placeholder)
+### 5.7 Popover (v0.3.0+)
 
-Click the menu-bar icon → "Show status…".
-- A dialog or popover should appear. In v0.2.x it's an `osascript display dialog` placeholder; in the Tier-2 release it'll be a real NSPopover.
-- Click OK / Close to dismiss.
-- The app does not freeze or refuse to dismiss.
+Left-click the menu-bar icon. The NSPopover appears anchored under the icon (no arrow).
+
+**Default panel:**
+- Status row at top: a colored dot (green = Running, yellow = Starting, red = failure) and a short label ("Running (47 min)", "Starting…", "Stopped", "Helper not responding", or "Another bsky-saves is using port 47826").
+- A bold "BSky Saves" header.
+- Two action buttons stacked: **Local GUI** and **saves.lightseed.net**.
+- Bottom row: link-styled "Library →" on the left, link-styled "More →" on the right.
+
+**Navigate to More:**
+- Click "More →". Popover swap-animates to the More panel.
+- Layout: "← Back" link top-left; a centered 2-column grid with "Pairing token" / Copy button and "Start at login" / switch; a horizontal separator; a "Quit" button; a centered two-line version footer ("bsky-saves X · GUI Y" / "Installer N.N.N").
+- Click "← Back". Popover swap-animates back to Default.
+
+**Dismiss:**
+- Click outside the popover → popover closes; menu-bar icon's selected state releases.
+- Click the menu-bar icon again while open → popover closes (toggle behaviour).
+
+If the popover fails to appear or hangs, check `log show --predicate 'process == "BSky Saves"' --last 30s` for `[popover] show failed:` traceback. Past regressions covered the PyObjC `objc.super` arity error and the NSEvent monitor consuming clicks before pystray could route them.
 
 ### 5.8 Quit
 
-Click the menu-bar icon → "Quit".
+Open the popover → navigate to More → click **Quit** (v0.3.0+; Quit was a tray-menu item in v0.2.x).
 - The menu-bar icon disappears within a second.
-- `pgrep -ifa "Bsky Saves"` returns nothing.
+- `pgrep -ifa "BSky Saves"` returns nothing.
 - `lsof -nP -iTCP:47826 -sTCP:LISTEN` returns nothing.
 
 If a stray helper process survives Quit, the in-thread supervisor isn't being torn down — known limitation but worth catching variance.

@@ -68,6 +68,12 @@ requires = [
     "pystray>=0.19",
     "Pillow>=10",
     "httpx>=0.27",
+    # The v0.4.0 Library panel requires the helper's GET /status endpoint
+    # (per the cross-repo contract at bsky-saves-coordination:docs/
+    # installer-status-panel.md §4.2). Before tagging v0.4.0, bump this
+    # pin to the helper version that ships GET /status — otherwise the
+    # panel silently degrades to its placeholder for every user, forever.
+    # Coordinated three-way release per spec Appendix A.
     "bsky-saves==0.6.6",
 ]
 
