@@ -135,6 +135,10 @@ class TrayApp:
         self._badge_layer = None
         self._health_timer = None
         self._tray_button = None
+        # Optional popover reference for co-fetching /status on the
+        # health-poll tick. Set by app.py via set_status_observer once
+        # the popover is lazily constructed.
+        self._status_observer = None
         self._click_monitor = None
 
     def run(self) -> None:
@@ -416,8 +420,71 @@ class TrayApp:
                 self._badge_layer.setBackgroundColor_(
                     _status_badge_color(snapshot.state).CGColor()
                 )
+
+            # Co-fetch /status when the popover is visible. Lives on the
+            # same 5s tick as the health poll so the launcher only has
+            # one timer driving network activity at idle. Off-thread +
+            # main-queue update preserves AppKit's main-thread invariant.
+            self._maybe_cofetch_status()
         except Exception as exc:
             print(f"[tray] _on_health_tick failed: {exc!r}", file=sys.stderr)
+
+    def set_status_observer(self, popover) -> None:
+        """Register the popover so this tray's 5s tick co-fetches
+        /status and pushes the snapshot to the popover when it's
+        visible. app.py wires this once the popover is lazily
+        constructed on first show. Safe to overwrite if the popover is
+        rebuilt; only one observer at a time."""
+        self._status_observer = popover
+
+    def _maybe_cofetch_status(self) -> None:
+        """If a status observer is registered and currently showing the
+        popover, fetch /status on a daemon worker thread and marshal the
+        result back to the main thread before pushing to the popover.
+        No-op otherwise. Best-effort; logs and drops on any failure."""
+        import sys
+        import threading
+
+        observer = self._status_observer
+        if observer is None:
+            return
+        try:
+            visible = observer.is_shown()
+        except Exception:
+            visible = False
+        if not visible:
+            return
+
+        def worker():
+            from bsky_saves_launcher import status as s
+            from bsky_saves_launcher import token as t
+
+            try:
+                tok = t.read_pairing_token()
+            except Exception:
+                tok = None
+            if not tok:
+                snap = None
+            else:
+                try:
+                    snap = s.fetch_status(token=tok)
+                except Exception:
+                    snap = None
+            try:
+                from Foundation import (  # type: ignore[import-not-found]
+                    NSOperationQueue,
+                )
+
+                NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: observer.update_library(snap)
+                )
+            except Exception as exc:
+                print(
+                    f"[tray] status update dispatch failed: {exc!r}",
+                    file=sys.stderr,
+                )
+
+        threading.Thread(target=worker, daemon=True).start()
 
     def icon_handle(self):
         """Return the underlying pystray.Icon (only valid after run() starts)."""
