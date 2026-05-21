@@ -1229,8 +1229,10 @@ class StatusPopover:
         # Show hydration section header only if at least one feature is
         # present in the payload.
         h["hydration_section_label"].setHidden_(len(rows_data) == 0)
+        # strict=True asserts the invariant that the pre-built row list
+        # and the contract-locked feature-name list are both length 3.
         for (_lab, bar, ratio, row), name in zip(
-            h["hydration_rows"], ["articles", "threads", "images"], strict=False
+            h["hydration_rows"], ["articles", "threads", "images"], strict=True
         ):
             match = next(
                 ((lbl, c, t) for lbl, c, t in rows_data if lbl.lower() == name),
@@ -1345,20 +1347,21 @@ class StatusPopover:
 
     def _on_status_fetched(self, snapshot) -> None:
         """Marshal a fetched snapshot back to the main thread for UI
-        update. Called from background worker threads."""
+        update. Called from background worker threads.
+
+        If the main-queue dispatch itself fails, the update is dropped
+        rather than fired from the worker thread — calling AppKit off
+        the main thread is worse than missing one tick (the next tray
+        health-poll cycle, ~5s later, will refresh the snapshot).
+        """
         try:
             from Foundation import NSOperationQueue  # type: ignore[import-not-found]
 
             NSOperationQueue.mainQueue().addOperationWithBlock_(
                 lambda: self.update_library(snapshot)
             )
-        except Exception:
-            # Last-resort fallback — direct update. UI thread invariance
-            # may be violated; only reached if PyObjC isn't available.
-            try:
-                self.update_library(snapshot)
-            except Exception:
-                pass
+        except Exception as exc:
+            print(f"[popover] status update dispatch failed: {exc!r}", file=sys.stderr)
 
     def _animated_swap_controller(self, controller) -> None:
         """Swap the popover's contentViewController and animate the size
