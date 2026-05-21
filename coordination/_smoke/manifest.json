@@ -1,0 +1,6 @@
+{
+  "title": "installer dry-run: coordination workflow smoke test",
+  "files": [
+    { "source": "coordination/_smoke/smoke.md", "target": "docs/_smoke/installer-dryrun.md" }
+  ]
+}
