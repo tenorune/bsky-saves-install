@@ -6,6 +6,7 @@ import datetime as dt
 from unittest.mock import MagicMock, patch
 
 import httpx
+import pytest
 
 from bsky_saves_launcher.status import (
     HydrationProgress,
@@ -237,7 +238,8 @@ def test_format_last_activity_hydrate_articles():
 
 
 def test_format_last_activity_none_when_absent():
-    assert format_last_activity(StatusSnapshot(), now=dt.datetime.now(dt.UTC)) is None
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    assert format_last_activity(StatusSnapshot(), now=now) is None
 
 
 # --- format_staleness -------------------------------------------------------
@@ -277,3 +279,64 @@ def test_format_staleness_days():
     )
     # 2 days
     assert format_staleness(snap, now=now) == "last seen 2 days ago"
+
+
+def test_format_staleness_one_day():
+    now = dt.datetime(2026, 5, 18, 20, 15, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        updated_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC)
+    )
+    # Exactly 1 day
+    assert format_staleness(snap, now=now) == "last seen 1 day ago"
+
+
+# --- tolerant parser --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "bad_payload, description",
+    [
+        ([], "payload is a list, not a dict"),
+        (None, "payload is None"),
+        ("a string", "payload is a string"),
+        ({"library": "not a dict"}, "library sub-object is wrong type"),
+        ({"hydration": "broken"}, "hydration sub-object is wrong type"),
+        ({"storage": []}, "storage sub-object is wrong type"),
+        ({"last_activity": 42}, "last_activity sub-object is wrong type"),
+        ({"library": {"total_saves": "1247"}}, "total_saves is string not int"),
+        (
+            {"library": {"total_saves": True}},
+            "total_saves is bool — must be rejected (bool is int subclass)",
+        ),
+        ({"updated_at": "not-a-date"}, "malformed ISO-8601"),
+        ({"library": {"by_status": "not a dict"}}, "by_status is wrong type"),
+        (
+            {"hydration": {"articles": "broken"}},
+            "hydration entry value is wrong type",
+        ),
+        (
+            {"hydration": {"articles": {"completed": "x", "total": "y"}}},
+            "hydration entry fields are strings",
+        ),
+        ({"last_activity": {"errors": "not a list"}}, "errors is wrong type"),
+        (
+            {"last_activity": {"errors": [{"kind": 1, "message": 2, "count": "x"}]}},
+            "error entry fields are wrong types",
+        ),
+    ],
+)
+def test_fetch_status_tolerates_bad_shapes(bad_payload, description):
+    """Tolerant parser: bad shapes return None (for whole-payload-bad) or
+    a snapshot with sensible defaults (for sub-object-bad). Never raises."""
+    with patch(
+        "bsky_saves_launcher.status.httpx.get",
+        return_value=_resp(200, bad_payload),
+    ):
+        # Should never raise; result is either None or a usable StatusSnapshot.
+        result = fetch_status(token="abc")
+    # If payload isn't even a dict, fetch_status returns None.
+    if not isinstance(bad_payload, dict):
+        assert result is None, description
+    else:
+        # Bad sub-objects yield a snapshot with defaults; never crash.
+        assert result is not None, description

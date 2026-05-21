@@ -17,7 +17,6 @@ from typing import Any
 
 import httpx
 
-STATUS_URL = "http://127.0.0.1:47826/status"
 STATUS_TIMEOUT_S = 2.0
 STALENESS_THRESHOLD_S = 300  # 5 minutes, locked by R10
 
@@ -88,6 +87,9 @@ class StatusSnapshot:
     updated_at: dt.datetime | None = None
     current_state: str | None = None
     priority: str | None = None
+    # Asymmetry note: `library` is always-present per the contract, so bad
+    # input degrades to an empty LibraryInfo (never None). `storage` and
+    # `last_activity` are optional per the contract, so bad input → None.
     library: LibraryInfo = field(default_factory=LibraryInfo)
     hydration: dict[str, HydrationProgress] = field(default_factory=dict)
     storage: StorageInfo | None = None
@@ -284,7 +286,8 @@ def _relative_time(then: dt.datetime, now: dt.datetime) -> str:
     if delta < 86400:
         return f"{int(delta // 3600)} h ago"
     if delta < 7 * 86400:
-        return f"{int(delta // 86400)} days ago"
+        days = int(delta // 86400)
+        return f"{days} day ago" if days == 1 else f"{days} days ago"
     return then.date().isoformat()
 
 
