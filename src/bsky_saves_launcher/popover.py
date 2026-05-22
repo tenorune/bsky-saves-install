@@ -204,7 +204,10 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
     stack.setSpacing_(6.0)
-    stack.setEdgeInsets_((6, 12, 4, 12))
+    # Bottom inset gives the "More →" link breathing room from the
+    # popover's bottom edge (symmetric with the 12pt setCustomSpacing
+    # above the link, near the placeholder/content block).
+    stack.setEdgeInsets_((6, 12, 12, 12))
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
@@ -344,12 +347,20 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     placeholder.setHidden_(True)
     stack.addArrangedSubview_(placeholder)
 
-    # Breathing room above and below the Local GUI button: 12pt over
-    # the status row (above the button) and 16pt below it (between
-    # button and the library content / placeholder).
+    # Breathing room around key blocks:
+    # - 12pt over the status row (above the Local GUI button).
+    # - 16pt below the Local GUI button (separates it from the
+    #   library content / placeholder).
+    # - 12pt above the library content/placeholder block before the
+    #   bottom-right "More →" link (above the link).
+    # - The link's own bottom is governed by the outer stack inset.
     try:
         stack.setCustomSpacing_afterView_(12.0, status_label)
         stack.setCustomSpacing_afterView_(16.0, local_gui_button)
+        # The view immediately before the nav row is the placeholder
+        # stack (always added last among the content blocks; visible
+        # state doesn't affect the spacing-anchor view identity).
+        stack.setCustomSpacing_afterView_(12.0, placeholder)
     except Exception:
         pass
 
@@ -368,7 +379,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     # visibility toggles. fittingSize-based dynamic sizing was tried but
     # the VEV wrapper (frame-based) fights Auto Layout on the inner
     # stack — keeping the inner stack frame-based is simpler.
-    stack.setFrame_(((0, 0), (300, 260)))
+    stack.setFrame_(((0, 0), (300, 280)))
 
     library_handles = {
         "handle_label": handle_label,
@@ -1223,8 +1234,8 @@ class StatusPopover:
     # Two precomputed heights for the Default panel — placeholder vs
     # populated. Switched between in _resize_default_to_content based on
     # which sub-stack is currently visible. Width is 300pt regardless.
-    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 140.0)
-    _DEFAULT_POPULATED_SIZE = (300.0, 260.0)
+    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 160.0)
+    _DEFAULT_POPULATED_SIZE = (300.0, 280.0)
 
     def _resize_default_to_content(self) -> None:
         """Switch the Default panel's preferredContentSize between the
