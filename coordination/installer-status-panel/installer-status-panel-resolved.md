@@ -165,3 +165,42 @@ Rationale:
 - **Why not focus-gated instead.** A focused-popover-only variant (poll only when the user has the popover focused) was considered and rejected: a transient popover loses focus the moment the user moves attention elsewhere on screen, but stays *visible* until it's dismissed by click-outside. Halting polling on focus-loss would freeze the panel during the user's most likely look-at moments (popover open, user reading the values while their attention's already drifted to the next thing).
 
 Implementation note (informational, not contract): the installer's existing health poll timer lives in `bsky_saves_launcher.tray.TrayApp`; the status fetch will be added there. The popover's `popoverWillShow:` schedules an immediate fetch and `popoverWillClose:` clears the next-fetch timestamp. No change to the panel's existing auth flow — the same bearer token is reused.
+
+---
+
+## R11 — Semantics of `last_activity.kind` vs `current_state`
+
+**Raised by:** Installer (2026-05-22) as §7 Q10.
+**Resolved by:** GUI (2026-05-22) in §4.4 field semantics + code fix in [tenorune/bsky-saves-gui#85](https://github.com/tenorune/bsky-saves-gui/issues/85) (merged 2026-05-22, released in v0.6.5-rc.4).
+
+**Question:** Installer-side panel observed two related defects against pre-fix GUI builds:
+
+1. **In-flight detection unreliable.** Panel can't tell the GUI is mid-work from `current_state` alone (which dropped to `"idle"` while image / article / thread hydration was still running), so the panel falls back to inferring activity from observed hydration-progress deltas across polls (8s grace window). Side effect: up to 8s of stale "Backing up…" persistence after hydration ends.
+
+2. **Restart loses last-activity context.** When the installer restarts, the helper rebinds and loads its persisted disk snapshot. If the most recent GUI push had `last_activity.kind = "idle"` (the in-memory default at GUI startup), the panel renders no last-activity line on restart — even though a real activity happened minutes ago.
+
+GUI testing of v0.6.5-rc.3 surfaced a third symptom with the same root cause as (1): the panel renders blank during the initial "First fetch in progress…" phase because the panel's progress-delta inference window has nothing to observe yet (hydration hasn't started; only the fetch phase has).
+
+**Resolution:** **Both bugs are GUI-side and the proposed semantics are adopted verbatim.**
+
+- **`last_activity.kind`** = the last *completed* operation. Values: `"fetch" | "hydrate_articles" | "hydrate_threads" | "hydrate_images" | "manual_refresh"`. Monotonically advances through real operations; never reverts to `"idle"` after the first real operation. `"idle"` is retained in the enum only as a fresh-install / post-clear sentinel (i.e., before any real operation, or after `DELETE /status` / "Clear all data").
+- **`current_state`** = what the GUI is doing *right now*. Values: `"idle" | "refreshing" | "hydrating" | "error"`. The field that flips around during transitions; `"idle"` here is meaningful and expected during steady-state.
+
+§4.4 field-reference list was tightened to capture these semantics in-place.
+
+**GUI implementation** (in v0.6.5-rc.4):
+
+- **Fix 1 — `deriveCurrentState` is now hydration-aware.** It reads all three hydration stores (`imageHydration`, `articleHydration`, `threadProgress`) in addition to `libraryRefreshState` and `fetchProgress`. Returns `"hydrating"` whenever any hydration store is running, even after the library refresh itself has flipped back to idle (which it does well before the fire-and-forget image / article hydration completes).
+
+- **Fix 2 — `last_activity` is now persisted to local browser storage.** The pusher writes the activity record to `idb-keyval` under `status-pusher:last-activity:v1` on every watcher transition, and restores it at `initStatusPusher` boot via a guarded fire-and-forget load. A "real activity that fires before the load resolves" race is handled by only applying the restored value while in-memory `currentActivity` is still at its initial idle / null-started_at default. Settings → "Clear all data" wipes the persisted record alongside the existing `deleteStatus()` call.
+
+**Verification status (against v0.6.5-rc.4):**
+
+- ✅ Mid-hydration `current_state` (problem 1) — fixed. `current_state === "hydrating"` is now pushed for the entire duration of image / article / thread hydration regardless of `libraryRefreshState` value.
+- ✅ Post-restart `last_activity.kind` (problem 2) — fixed. GUI restart now restores the persisted record from idb before the activation rising-edge push, so the helper's on-disk snapshot is no longer overwritten with `"idle"`.
+- ✅ First Fetch blank-panel (the third symptom) — fixed end-to-end. The installer panel now renders "Fetching library…" while `current_state === "refreshing"` (placeholder headline when no snapshot has handle yet) and "Refreshing…" inline once a library is identified. Landed on `claude/spec-installer-status-panel` in `tenorune/bsky-saves-install` (commit `73e035e`).
+
+**Installer follow-ups — closed:**
+
+- ✅ **`current_state === "refreshing"` render branch.** Implemented in `_render_library_section`: placeholder headline switches to "Fetching library…" when in-flight pre-handle, and the last-activity row reads "Refreshing…" / "Backing up…" inline when refreshing / hydrating.
+- ✅ **Progress-delta inference retired.** `status.hydration_is_progressing`, `StatusPopover._hydration_active_until`, and the delta-detection branch in `update_library` were removed (commit `ec32356`). The panel now reads `snap.current_state` directly. No `/ping`-based version gate was added — the installer has no external user base at this stage (internal dogfooding only), so the legacy GUI fallback path was not needed.

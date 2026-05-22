@@ -1,6 +1,7 @@
 {
-  "title": "Installer revision: raise Q10 — last_activity.kind vs current_state semantics",
+  "title": "Installer revision: close R11 end-to-end (refreshing render branch + retire delta inference)",
   "files": [
-    { "source": "coordination/installer-status-panel/installer-status-panel.md", "target": "docs/installer-status-panel.md" }
+    { "source": "coordination/installer-status-panel/installer-status-panel.md", "target": "docs/installer-status-panel.md" },
+    { "source": "coordination/installer-status-panel/installer-status-panel-resolved.md", "target": "docs/installer-status-panel-resolved.md" }
   ]
 }
