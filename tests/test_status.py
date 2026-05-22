@@ -220,22 +220,69 @@ def test_format_last_activity_fetch_basic():
             errors=[],
         )
     )
-    assert format_last_activity(snap, now=now) == "Fetch · 2 min ago · +3 / −0"
+    assert format_last_activity(snap, now=now) == "Last: fetched 2 min ago · +3 / −0"
 
 
-def test_format_last_activity_hydrate_articles():
+def test_format_last_activity_hydrate_threads():
     now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
     snap = StatusSnapshot(
         last_activity=LastActivity(
-            kind="hydrate_articles",
-            finished_at=dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC),
+            kind="hydrate_threads",
+            finished_at=dt.datetime(2026, 5, 17, 20, 16, 30, tzinfo=dt.UTC),
             added=0,
             removed=0,
             errors=[],
         )
     )
-    # Hydrate-* labels: humanize the kind, no add/remove since they're 0/0
-    assert format_last_activity(snap, now=now) == "Hydrate articles · just now"
+    assert format_last_activity(snap, now=now) == "Last: backed up threads just now"
+
+
+def test_format_last_activity_hydrate_articles_minutes():
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        last_activity=LastActivity(
+            kind="hydrate_articles",
+            finished_at=dt.datetime(2026, 5, 17, 20, 12, 0, tzinfo=dt.UTC),
+            added=0,
+            removed=0,
+            errors=[],
+        )
+    )
+    assert format_last_activity(snap, now=now) == "Last: backed up articles 5 min ago"
+
+
+def test_format_last_activity_falls_back_to_started_at():
+    """When finished_at is None but started_at is set, use started_at
+    for the relative-time anchor. Covers the GUI's mid-activity push
+    where finished_at hasn't been written yet."""
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        last_activity=LastActivity(
+            kind="hydrate_images",
+            started_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC),
+            finished_at=None,
+            added=0,
+            removed=0,
+            errors=[],
+        )
+    )
+    assert format_last_activity(snap, now=now) == "Last: backed up images 2 min ago"
+
+
+def test_format_last_activity_idle_kind_returns_none():
+    """kind='idle' produces no rendering — there's no meaningful past
+    activity to report."""
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        last_activity=LastActivity(
+            kind="idle",
+            finished_at=dt.datetime(2026, 5, 17, 20, 16, 0, tzinfo=dt.UTC),
+            added=0,
+            removed=0,
+            errors=[],
+        )
+    )
+    assert format_last_activity(snap, now=now) is None
 
 
 def test_format_last_activity_none_when_absent():
@@ -243,49 +290,21 @@ def test_format_last_activity_none_when_absent():
     assert format_last_activity(StatusSnapshot(), now=now) is None
 
 
-def test_format_last_activity_hydrating_overrides_stale_idle_kind():
-    """When current_state says we're hydrating, the label must reflect
-    that — even if last_activity.kind is still "idle" from the last
-    completed cycle. The user sees what's happening now."""
+def test_format_last_activity_manual_refresh():
     now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
     snap = StatusSnapshot(
-        current_state="hydrating",
         last_activity=LastActivity(
-            kind="idle",
-            finished_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC),
-            added=0,
-            removed=0,
+            kind="manual_refresh",
+            finished_at=dt.datetime(2026, 5, 17, 20, 16, 0, tzinfo=dt.UTC),
+            added=2,
+            removed=1,
             errors=[],
-        ),
+        )
     )
-    assert format_last_activity(snap, now=now) == "Hydrating…"
-
-
-def test_format_last_activity_refreshing_overrides():
-    """Same override applies for current_state == 'refreshing'."""
-    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
-    snap = StatusSnapshot(
-        current_state="refreshing",
-        last_activity=LastActivity(kind="fetch", added=0, removed=0, errors=[]),
+    assert (
+        format_last_activity(snap, now=now)
+        == "Last: manually refreshed 1 min ago · +2 / −1"
     )
-    assert format_last_activity(snap, now=now) == "Refreshing…"
-
-
-def test_format_last_activity_idle_current_state_falls_through():
-    """When current_state is 'idle' (or absent), the function uses
-    last_activity.kind as before."""
-    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
-    snap = StatusSnapshot(
-        current_state="idle",
-        last_activity=LastActivity(
-            kind="fetch",
-            finished_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC),
-            added=3,
-            removed=0,
-            errors=[],
-        ),
-    )
-    assert format_last_activity(snap, now=now) == "Fetch · 2 min ago · +3 / −0"
 
 
 # --- hydration_is_progressing -----------------------------------------------

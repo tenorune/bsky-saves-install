@@ -21,13 +21,20 @@ STATUS_TIMEOUT_S = 2.0
 STALENESS_THRESHOLD_S = 300  # 5 minutes, locked by R10
 
 _HYDRATION_ORDER = ("threads", "images", "articles")
-_KIND_LABELS = {
-    "fetch": "Fetch",
-    "hydrate_articles": "Hydrate articles",
-    "hydrate_threads": "Hydrate threads",
-    "hydrate_images": "Hydrate images",
-    "manual_refresh": "Manual refresh",
-    "idle": "Idle",
+# Past-tense verb phrases for the last-activity line. Render reads as
+# "Last: <phrase> <time>" — e.g. "Last: fetched 2 min ago", "Last:
+# backed up threads just now". Hydrate kinds are written as "backed up
+# X" because that's what the user perceives — the GUI calls it hydration
+# internally but the panel surface is for the end-user.
+# "idle" maps to None: when nothing meaningful has happened we just hide
+# the last-activity line entirely rather than rendering "Last: idle".
+_KIND_LABELS: dict[str, str | None] = {
+    "fetch": "fetched",
+    "hydrate_articles": "backed up articles",
+    "hydrate_threads": "backed up threads",
+    "hydrate_images": "backed up images",
+    "manual_refresh": "manually refreshed",
+    "idle": None,
 }
 
 
@@ -312,34 +319,48 @@ def hydration_is_progressing(prev: StatusSnapshot | None, curr: StatusSnapshot) 
 def format_last_activity(
     snap: StatusSnapshot, *, now: dt.datetime | None = None
 ) -> str | None:
-    """Return a one-line summary of the last activity, or None if absent.
+    """Return a "Last: <verb-phrase> <time>" line, or None if absent.
 
-    When `snap.current_state` is `"refreshing"` or `"hydrating"`, the
-    helper is actively working — surface the in-flight state instead of
-    the recorded `last_activity.kind`. This handles the case where the
-    GUI marks `last_activity.kind = "idle"` between transitions even
-    though hydration is still running: the user sees what's happening
-    *now* rather than the last completed activity.
+    The label uses a past-tense verb phrase ("fetched", "backed up
+    threads") so reading it inline produces "Last: fetched 2 min ago"
+    or "Last: backed up images just now". `_KIND_LABELS` maps the
+    contract kinds; unrecognized kinds fall through to a humanized
+    form.
+
+    Time source: `last_activity.finished_at` is preferred; if absent
+    (the GUI sometimes omits it mid-activity) we fall back to
+    `last_activity.started_at`. If neither is present, the verb phrase
+    renders without a relative time.
+
+    Returns None when:
+      - `last_activity` is absent entirely;
+      - `kind` is None or "idle" (no meaningful activity to report).
+
+    In-flight states (`current_state == "refreshing"` / `"hydrating"`)
+    are NOT handled here — the popover renderer composes the live
+    label from `current_state` + observed hydration deltas; this
+    function only describes the last *completed* activity.
     """
-    if snap.current_state == "hydrating":
-        return "Hydrating…"
-    if snap.current_state == "refreshing":
-        return "Refreshing…"
-
     la = snap.last_activity
     if la is None or la.kind is None:
         return None
+    label = _KIND_LABELS.get(la.kind)
+    if label is None and la.kind in _KIND_LABELS:
+        # Explicit None in the map (e.g. "idle") → no rendering.
+        return None
+    if label is None:
+        # Unknown kind: humanize fallback.
+        label = la.kind.replace("_", " ").lower()
     if now is None:
         now = dt.datetime.now(dt.UTC)
-    label = _KIND_LABELS.get(la.kind, la.kind.replace("_", " ").capitalize())
-    when = _relative_time(la.finished_at, now) if la.finished_at else None
-    parts = [label]
+    when_source = la.finished_at or la.started_at
+    when = _relative_time(when_source, now) if when_source else None
+    line = f"Last: {label}"
     if when:
-        parts.append(when)
-    out = " · ".join(parts)
+        line += f" {when}"
     if la.added or la.removed:
-        out += f" · +{la.added} / −{la.removed}"
-    return out
+        line += f" · +{la.added} / −{la.removed}"
+    return line
 
 
 def format_staleness(

@@ -192,6 +192,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSProgressIndicatorStyleSpinning,
         NSStackView,
         NSStackViewDistributionFill,
+        NSStackViewDistributionGravityAreas,
         NSTextAlignmentCenter,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
@@ -218,9 +219,15 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     stack.addArrangedSubview_(local_gui_button)
 
     # ── Library content block (visible when snapshot has a handle) ──
+    # GravityAreas (not Fill) so arranged subviews keep their intrinsic
+    # heights and stack naturally from the top. Without this, Fill
+    # distributes leftover panel height across the children — pushing
+    # the hydration bars to the bottom of the panel and leaving a gap
+    # above. The hydration rows belong directly below the last-activity
+    # line; any leftover space sits at the bottom of the stack.
     library_content = NSStackView.alloc().init()
     library_content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
-    library_content.setDistribution_(NSStackViewDistributionFill)
+    library_content.setDistribution_(NSStackViewDistributionGravityAreas)
     library_content.setSpacing_(4.0)
 
     handle_label = NSTextField.labelWithString_("")
@@ -337,9 +344,12 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     placeholder.setHidden_(True)
     stack.addArrangedSubview_(placeholder)
 
-    # Breathing room above the More link.
+    # Breathing room above and below the Local GUI button: 12pt over
+    # the status row (above the button) and 16pt below it (between
+    # button and the library content / placeholder).
     try:
-        stack.setCustomSpacing_afterView_(8.0, local_gui_button)
+        stack.setCustomSpacing_afterView_(12.0, status_label)
+        stack.setCustomSpacing_afterView_(16.0, local_gui_button)
     except Exception:
         pass
 
@@ -358,7 +368,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     # visibility toggles. fittingSize-based dynamic sizing was tried but
     # the VEV wrapper (frame-based) fights Auto Layout on the inner
     # stack — keeping the inner stack frame-based is simpler.
-    stack.setFrame_(((0, 0), (300, 290)))
+    stack.setFrame_(((0, 0), (300, 260)))
 
     library_handles = {
         "handle_label": handle_label,
@@ -730,7 +740,7 @@ class StatusPopover:
         self._last_status_snapshot: StatusSnapshot | None = None
         # Monotonic time until which we consider hydration "active" because
         # we observed progress between the previous and current snapshot.
-        # Drives the spinner + "Hydrating…" label when the GUI's own
+        # Drives the spinner + "Backing up…" label when the GUI's own
         # current_state signal doesn't flip to "hydrating".
         self._hydration_active_until: float | None = None
 
@@ -1086,13 +1096,14 @@ class StatusPopover:
 
         h["handle_label"].setStringValue_(f"@{snap.library.handle}")
 
-        staleness = s.format_staleness(snap)
-        if staleness is None:
-            h["staleness_label"].setStringValue_("")
-            h["staleness_label"].setHidden_(True)
-        else:
-            h["staleness_label"].setStringValue_(staleness)
-            h["staleness_label"].setHidden_(False)
+        # Staleness indicator is intentionally hidden: the last-activity
+        # line below (e.g. "Last: fetched 12 min ago") gives the user
+        # a better timeliness signal than a separate "last seen" tag.
+        # Leaving the widget in place but always-hidden so the layout
+        # contract stays stable; uncomment the setStringValue + show
+        # path to re-enable.
+        h["staleness_label"].setStringValue_("")
+        h["staleness_label"].setHidden_(True)
 
         total = s.format_total_saves(snap)
         retention = s.format_retention(snap)
@@ -1171,7 +1182,7 @@ class StatusPopover:
         if refreshing:
             la_str = "Refreshing…"
         elif hydrating:
-            la_str = "Hydrating…"
+            la_str = "Backing up…"
         else:
             la_str = s.format_last_activity(snap)
         h["last_activity_label"].setStringValue_(la_str or "")
@@ -1212,8 +1223,8 @@ class StatusPopover:
     # Two precomputed heights for the Default panel — placeholder vs
     # populated. Switched between in _resize_default_to_content based on
     # which sub-stack is currently visible. Width is 300pt regardless.
-    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 130.0)
-    _DEFAULT_POPULATED_SIZE = (300.0, 290.0)
+    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 140.0)
+    _DEFAULT_POPULATED_SIZE = (300.0, 260.0)
 
     def _resize_default_to_content(self) -> None:
         """Switch the Default panel's preferredContentSize between the
