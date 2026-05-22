@@ -298,24 +298,6 @@ def _relative_time(then: dt.datetime, now: dt.datetime) -> str:
     return then.date().isoformat()
 
 
-def hydration_is_progressing(prev: StatusSnapshot | None, curr: StatusSnapshot) -> bool:
-    """True iff any hydration channel's `completed` increased between two
-    snapshots. Used by the panel to detect active hydration when the GUI's
-    `current_state` doesn't flip to `"hydrating"` (observed in practice;
-    GUI marks kind="idle" between transitions even mid-hydration).
-    """
-    if prev is None:
-        return False
-    for key in _HYDRATION_ORDER:
-        p = prev.hydration.get(key)
-        c = curr.hydration.get(key)
-        if p is None or c is None:
-            continue
-        if c.completed > p.completed:
-            return True
-    return False
-
-
 def format_last_activity(
     snap: StatusSnapshot, *, now: dt.datetime | None = None
 ) -> str | None:

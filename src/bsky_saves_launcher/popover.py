@@ -817,11 +817,6 @@ class StatusPopover:
         # _render_library_section updates from the cached snapshot.
         self._library_handles = None
         self._last_status_snapshot: StatusSnapshot | None = None
-        # Monotonic time until which we consider hydration "active" because
-        # we observed progress between the previous and current snapshot.
-        # Drives the spinner + "Backing up…" label when the GUI's own
-        # current_state signal doesn't flip to "hydrating".
-        self._hydration_active_until: float | None = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -1127,42 +1122,13 @@ class StatusPopover:
         """Cache the latest snapshot and re-render the library section
         embedded in the Default panel.
 
-        Detects hydration activity by comparing the previous snapshot
-        with the new one — if any hydration channel's `completed` count
-        increased, mark hydration "active" for ~8 seconds (a bit over
-        the 5s poll interval, so a single tick of no progress doesn't
-        immediately flip back to "Idle"). This is needed because in
-        practice the GUI doesn't always set `current_state="hydrating"`
-        while hydration is running (tracked in tenorune/bsky-saves-gui#85,
-        Q10 in the cross-repo contract). Once the GUI fix lands the
-        delta inference can be retired — see _DELTA_INFERENCE_RETIRABLE
-        below.
-
         Callable from the main thread only (the tray's 5s tick and
         popover's own fetch both marshal via NSOperationQueue before
         calling). Idempotent and safe to call before _construct has run
         — `_library_handles` is None-guarded.
         """
-        import time as _time
-
-        from bsky_saves_launcher import status as s
-
-        prev = self._last_status_snapshot
-        if snapshot is not None and s.hydration_is_progressing(prev, snapshot):
-            self._hydration_active_until = _time.monotonic() + 8.0
         self._last_status_snapshot = snapshot
         self._render_library_section()
-
-    # TODO(after-gui-fix): once bsky-saves-gui ships the Q10 fix
-    # (tenorune/bsky-saves-gui#85), current_state will reliably reflect
-    # hydration. At that point:
-    #   - Drop status.hydration_is_progressing + this class's
-    #     _hydration_active_until tracking.
-    #   - Simplify the hydrating-check in _render_library_section to
-    #     `snap.current_state == "hydrating"`.
-    # Leaving the inference in place until then so the panel works
-    # against pre-fix GUI builds.
-    _DELTA_INFERENCE_RETIRABLE = False
 
     def _render_library_section(self) -> None:
         """Populate the library section inside the Default panel.
@@ -1276,20 +1242,12 @@ class StatusPopover:
                 pass
             ratio.setStringValue_(f"{completed:,} / {total_v:,}")
 
-        # In-flight detection. Two signals are OR'd together:
-        #   1. GUI's explicit current_state ("refreshing" / "hydrating").
-        #   2. Our observed hydration delta (set in update_library when
-        #      a channel's completed count goes up between polls). Covers
-        #      the case where the GUI marks current_state="idle" while
-        #      still hydrating — without #2 the label would say "Idle"
-        #      and the spinner would stay still.
-        import time as _time
-
+        # In-flight detection: trust the GUI's current_state, which since
+        # bsky-saves-gui v0.6.5-rc.4 reliably reflects all three hydration
+        # stores throughout the hydration phase (R11 in the cross-repo
+        # contract). No fallback inference needed at our dogfood scale.
         refreshing = snap.current_state == "refreshing"
-        hydrating = snap.current_state == "hydrating" or (
-            self._hydration_active_until is not None
-            and _time.monotonic() < self._hydration_active_until
-        )
+        hydrating = snap.current_state == "hydrating"
 
         if refreshing:
             la_str = "Refreshing…"

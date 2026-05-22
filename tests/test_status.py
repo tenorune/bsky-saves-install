@@ -19,7 +19,6 @@ from bsky_saves_launcher.status import (
     format_retention,
     format_staleness,
     format_total_saves,
-    hydration_is_progressing,
 )
 
 # --- fetch_status -----------------------------------------------------------
@@ -305,60 +304,6 @@ def test_format_last_activity_manual_refresh():
         format_last_activity(snap, now=now)
         == "Last: manually refreshed 1 min ago · +2 / −1"
     )
-
-
-# --- hydration_is_progressing -----------------------------------------------
-
-
-def test_hydration_is_progressing_none_prev():
-    assert hydration_is_progressing(None, StatusSnapshot()) is False
-
-
-def test_hydration_is_progressing_detects_increase():
-    prev = StatusSnapshot(
-        hydration={"threads": HydrationProgress(completed=400, total=1247)}
-    )
-    curr = StatusSnapshot(
-        hydration={"threads": HydrationProgress(completed=412, total=1247)}
-    )
-    assert hydration_is_progressing(prev, curr) is True
-
-
-def test_hydration_is_progressing_no_change():
-    snap = StatusSnapshot(
-        hydration={"threads": HydrationProgress(completed=412, total=1247)}
-    )
-    assert hydration_is_progressing(snap, snap) is False
-
-
-def test_hydration_is_progressing_decrease_returns_false():
-    """`completed` going DOWN (e.g. user cleared) is not progress."""
-    prev = StatusSnapshot(
-        hydration={"threads": HydrationProgress(completed=412, total=1247)}
-    )
-    curr = StatusSnapshot(
-        hydration={"threads": HydrationProgress(completed=0, total=1247)}
-    )
-    assert hydration_is_progressing(prev, curr) is False
-
-
-def test_hydration_is_progressing_any_channel():
-    """Increase on any single channel counts as progressing."""
-    prev = StatusSnapshot(
-        hydration={
-            "threads": HydrationProgress(completed=412, total=1247),
-            "images": HydrationProgress(completed=856, total=1247),
-            "articles": HydrationProgress(completed=973, total=1247),
-        }
-    )
-    curr = StatusSnapshot(
-        hydration={
-            "threads": HydrationProgress(completed=412, total=1247),
-            "images": HydrationProgress(completed=856, total=1247),
-            "articles": HydrationProgress(completed=980, total=1247),
-        }
-    )
-    assert hydration_is_progressing(prev, curr) is True
 
 
 # --- format_staleness -------------------------------------------------------
