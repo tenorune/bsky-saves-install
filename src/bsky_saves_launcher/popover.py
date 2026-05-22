@@ -186,6 +186,10 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSButton,
         NSControlSizeSmall,
         NSFont,
+        NSGridCellPlacementCenter,
+        NSGridCellPlacementLeading,
+        NSGridCellPlacementTrailing,
+        NSGridView,
         NSLevelIndicator,
         NSLevelIndicatorStyleContinuousCapacity,
         NSProgressIndicator,
@@ -196,6 +200,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSStackViewGravityBottom,
         NSStackViewGravityTop,
         NSTextAlignmentCenter,
+        NSTextAlignmentRight,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
@@ -291,15 +296,35 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         la_right_spacer.widthAnchor()
     ).setActive_(True)
     library_content.addArrangedSubview_(la_row)
+    # la_row must span library_content's full width for the equal-width
+    # flex spacers to actually center la_inner on the panel. Without
+    # this, la_row sizes to la_inner's intrinsic width and the spacers
+    # collapse to zero — la_row then drifts left or right depending on
+    # NSStackView's centerX alignment behavior. Pinning leading/trailing
+    # to the parent stack forces la_row to fill the available width.
+    la_row.leadingAnchor().constraintEqualToAnchor_(
+        library_content.leadingAnchor()
+    ).setActive_(True)
+    la_row.trailingAnchor().constraintEqualToAnchor_(
+        library_content.trailingAnchor()
+    ).setActive_(True)
 
     # Three hydration rows in the contract-locked order
     # (threads, images, articles per the user's UI preference).
-    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
+    # NSGridView keeps the label / bar / ratio columns vertically
+    # aligned across rows — three independent NSStackViews would size
+    # each row's columns to their own intrinsic widths, so "Articles"
+    # (wider) vs "Threads" (narrower) would shift the bar and ratio
+    # positions row-by-row.
+    hydration_grid = NSGridView.alloc().init()
+    try:
+        hydration_grid.setRowSpacing_(4.0)
+        hydration_grid.setColumnSpacing_(8.0)
+    except Exception:
+        pass
+    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, gridRow)
     hydration_rows = []
     for label_text in ("Threads", "Images", "Articles"):
-        row = NSStackView.alloc().init()
-        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-        row.setSpacing_(8.0)
         lab = NSTextField.labelWithString_(label_text)
         lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
         bar = NSLevelIndicator.alloc().init()
@@ -307,13 +332,28 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
             bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
         except Exception:
             pass
+        # Give the bar a stable intrinsic width so the middle column
+        # doesn't collapse when ratios are short ("0 / 0"). 160pt fits
+        # inside the 300pt panel after 12pt insets, label, ratio, and
+        # 8pt column spacing.
+        try:
+            bar.widthAnchor().constraintEqualToConstant_(160.0).setActive_(True)
+        except Exception:
+            pass
         ratio = NSTextField.labelWithString_("")
         ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-        row.addArrangedSubview_(lab)
-        row.addArrangedSubview_(bar)
-        row.addArrangedSubview_(ratio)
-        library_content.addArrangedSubview_(row)
-        hydration_rows.append((lab, bar, ratio, row))
+        ratio.setAlignment_(NSTextAlignmentRight)
+        grid_row = hydration_grid.addRowWithViews_([lab, bar, ratio])
+        hydration_rows.append((lab, bar, ratio, grid_row))
+    # Column placements: label trailing (so the right edge of the text
+    # aligns flush against the bar), bar centered, ratio leading.
+    try:
+        hydration_grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
+        hydration_grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementCenter)
+        hydration_grid.columnAtIndex_(2).setXPlacement_(NSGridCellPlacementLeading)
+    except Exception:
+        pass
+    library_content.addArrangedSubview_(hydration_grid)
 
     # Inter-group spacing within the library content block:
     # - 16pt between the saves counters (group 3) and the last
