@@ -246,6 +246,21 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     library_content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     library_content.setDistribution_(NSStackViewDistributionGravityAreas)
     library_content.setSpacing_(4.0)
+    # Lock library_content to its intrinsic vertical content height —
+    # the outer stack must not be able to inflate it. Without this lock,
+    # a resize round-trip (More→Back) can leave library_content taller
+    # than its content and the activity line drifts inside the inflated
+    # container. Required huggingPriority makes any expansion attempt
+    # unsatisfiable, so library_content stays tight to its visible
+    # children regardless of available outer-stack space.
+    try:
+        NSLayoutConstraintOrientationVertical = 1
+        NSLayoutPriorityRequired = 1000.0
+        library_content.setHuggingPriority_forOrientation_(
+            NSLayoutPriorityRequired, NSLayoutConstraintOrientationVertical
+        )
+    except Exception:
+        pass
 
     handle_label = NSTextField.labelWithString_("")
     handle_label.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
@@ -695,15 +710,20 @@ def _wrap_in_active_visual_effect(inner):
     vev.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
     vev.setState_(NSVisualEffectStateActive)
     inner.setFrame_(((0, 0), size))
-    # Anchor the inner stack to the top of the VEV. If the popover ever
-    # renders us inside a window taller than our intrinsic size (e.g. a
-    # resize-on-back didn't fully take effect), this keeps the content
-    # pinned to the top rather than the bottom (Cocoa origin is
-    # bottom-left, so without MinYMargin extra height shows as a gap
-    # above the stack).
+    # Make the inner stack track the VEV's size exactly on every resize.
+    # Width AND height sizable — the previous WidthSizable|MinYMargin
+    # combo kept the inner at a fixed height and let the bottom margin
+    # flex, which on macOS Tahoe ended up offsetting the inner within
+    # the VEV after a More→Back resize round-trip: the content drifted
+    # downward inside the VEV, making the activity line look like it
+    # had moved relative to the totals / More link above and below.
+    # HeightSizable removes the offset by making the inner always fill
+    # the VEV; the outer NSStackView (GravityAreas) then keeps its
+    # children pinned to top/bottom gravity zones with leftover space
+    # cleanly between them.
     NSViewWidthSizable = 2
-    NSViewMinYMargin = 8
-    inner.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+    NSViewHeightSizable = 16
+    inner.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
     vev.addSubview_(inner)
     return vev
 
