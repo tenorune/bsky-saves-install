@@ -240,13 +240,23 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     # Last-activity row sits ABOVE the hydration bars so the current
     # state (Hydrating… / Refreshing… / "Fetch · N min ago") is the
-    # first thing the user reads after the totals.
+    # first thing the user reads after the totals. Centered as a unit
+    # via equal-width flex spacers on both sides — the [label]
+    # [spinner] [errors badge] group sits in the middle of the panel
+    # regardless of which sub-elements are currently visible.
     la_row = NSStackView.alloc().init()
     la_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    la_row.setSpacing_(6.0)
+    la_row.setDistribution_(NSStackViewDistributionFill)
+    la_row.setSpacing_(0)
+    la_left_spacer = NSView.alloc().init()
+    la_right_spacer = NSView.alloc().init()
+    la_row.addArrangedSubview_(la_left_spacer)
+    la_inner = NSStackView.alloc().init()
+    la_inner.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    la_inner.setSpacing_(6.0)
     last_activity_label = NSTextField.labelWithString_("")
     last_activity_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    la_row.addArrangedSubview_(last_activity_label)
+    la_inner.addArrangedSubview_(last_activity_label)
     spinner = NSProgressIndicator.alloc().init()
     try:
         spinner.setStyle_(NSProgressIndicatorStyleSpinning)
@@ -258,11 +268,16 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         pass
     spinner.setIndeterminate_(True)
     spinner.setDisplayedWhenStopped_(False)
-    la_row.addArrangedSubview_(spinner)
+    la_inner.addArrangedSubview_(spinner)
     errors_badge_button = NSButton.buttonWithTitle_target_action_("", None, None)
     errors_badge_button.setBezelStyle_(NSBezelStyleRounded)
     errors_badge_button.setHidden_(True)
-    la_row.addArrangedSubview_(errors_badge_button)
+    la_inner.addArrangedSubview_(errors_badge_button)
+    la_row.addArrangedSubview_(la_inner)
+    la_row.addArrangedSubview_(la_right_spacer)
+    la_left_spacer.widthAnchor().constraintEqualToAnchor_(
+        la_right_spacer.widthAnchor()
+    ).setActive_(True)
     library_content.addArrangedSubview_(la_row)
 
     # Three hydration rows in the contract-locked order
@@ -292,6 +307,11 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     # ── Placeholder (visible when snapshot is None or has no handle).
     # No CTA button — the Local GUI button above is the right action.
+    # The stack centres its (single) headline label by wrapping the
+    # label in a horizontal row with equal-width flex spacers — the
+    # NSStackView vertical-alignment default is leading-anchored on
+    # some macOS versions, which caused the headline to render off-
+    # centre even with NSTextAlignmentCenter on the label itself.
     placeholder = NSStackView.alloc().init()
     placeholder.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     placeholder.setDistribution_(NSStackViewDistributionFill)
@@ -301,7 +321,19 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     placeholder_headline = NSTextField.labelWithString_("No active library status yet.")
     placeholder_headline.setFont_(NSFont.boldSystemFontOfSize_(NSFont.smallSystemFontSize()))
     placeholder_headline.setAlignment_(NSTextAlignmentCenter)
-    placeholder.addArrangedSubview_(placeholder_headline)
+    headline_row = NSStackView.alloc().init()
+    headline_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    headline_row.setDistribution_(NSStackViewDistributionFill)
+    headline_row.setSpacing_(0)
+    ph_left = NSView.alloc().init()
+    ph_right = NSView.alloc().init()
+    headline_row.addArrangedSubview_(ph_left)
+    headline_row.addArrangedSubview_(placeholder_headline)
+    headline_row.addArrangedSubview_(ph_right)
+    ph_left.widthAnchor().constraintEqualToAnchor_(
+        ph_right.widthAnchor()
+    ).setActive_(True)
+    placeholder.addArrangedSubview_(headline_row)
     placeholder.setHidden_(True)
     stack.addArrangedSubview_(placeholder)
 
@@ -321,7 +353,12 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     nav_row.addArrangedSubview_(more_link)
     stack.addArrangedSubview_(nav_row)
 
-    stack.setFrame_(((0, 0), (300, 260)))
+    # Start at the larger (populated) size; _render_library_section
+    # switches between two precomputed heights when content/placeholder
+    # visibility toggles. fittingSize-based dynamic sizing was tried but
+    # the VEV wrapper (frame-based) fights Auto Layout on the inner
+    # stack — keeping the inner stack frame-based is simpler.
+    stack.setFrame_(((0, 0), (300, 290)))
 
     library_handles = {
         "handle_label": handle_label,
@@ -1172,42 +1209,42 @@ class StatusPopover:
         # even when only the one-line placeholder is showing.
         self._resize_default_to_content()
 
+    # Two precomputed heights for the Default panel — placeholder vs
+    # populated. Switched between in _resize_default_to_content based on
+    # which sub-stack is currently visible. Width is 300pt regardless.
+    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 130.0)
+    _DEFAULT_POPULATED_SIZE = (300.0, 290.0)
+
     def _resize_default_to_content(self) -> None:
-        """Compute the Default view's intrinsic fitting size after a
-        visibility change and apply it to the view controller's
-        preferredContentSize. NSPopover observes preferredContentSize
-        and resizes its window in response. If the popover is currently
-        showing the Default panel and the size actually changed, also
-        animate via the existing tween for smooth motion."""
+        """Switch the Default panel's preferredContentSize between the
+        populated and placeholder sizes based on which sub-stack is
+        currently visible. Tweens the popover's contentSize over 0.083s
+        so the height change is animated rather than snapping.
+
+        Uses two precomputed sizes rather than a fittingSize-based
+        dynamic measurement because the VEV wrapper that hosts the
+        inner stack is frame-based (Auto Layout on the inner conflicts
+        with the wrapper's setFrame_ path)."""
         if self._default_controller is None or self._popover is None:
             return
-        view = self._default_controller.view()
-        if view is None:
+        if self._library_handles is None:
             return
+        placeholder_visible = bool(self._library_handles["placeholder"].isHidden() is False)
+        target_w, target_h = (
+            self._DEFAULT_PLACEHOLDER_SIZE
+            if placeholder_visible
+            else self._DEFAULT_POPULATED_SIZE
+        )
         try:
-            # Force a layout pass so fittingSize reflects the new
-            # arranged-subview visibility before we read it.
-            view.layoutSubtreeIfNeeded()
-            fitting = view.fittingSize()
-            try:
-                target_w = fitting.width
-                target_h = fitting.height
-            except AttributeError:
-                target_w, target_h = fitting[0], fitting[1]
-            if not (target_w > 0 and target_h > 0):
-                return
             old_size = self._default_controller.preferredContentSize()
             try:
                 old_w = old_size.width
                 old_h = old_size.height
             except AttributeError:
                 old_w, old_h = old_size[0], old_size[1]
-            # No-op if the size hasn't meaningfully changed.
             if abs(target_h - old_h) < 1 and abs(target_w - old_w) < 1:
                 return
             self._default_controller.setPreferredContentSize_((target_w, target_h))
-            # Animate the popover's contentSize if we're the visible
-            # controller — preferredContentSize alone snaps on Tahoe.
             if self._content_controller is self._default_controller:
                 popover_size = self._popover.contentSize()
                 try:
