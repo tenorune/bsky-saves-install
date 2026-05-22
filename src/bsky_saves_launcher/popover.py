@@ -188,6 +188,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSFont,
         NSLevelIndicator,
         NSLevelIndicatorStyleContinuousCapacity,
+        NSLineBreakByTruncatingTail,
         NSProgressIndicator,
         NSProgressIndicatorStyleSpinning,
         NSStackView,
@@ -269,6 +270,15 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     la_inner.setSpacing_(6.0)
     last_activity_label = NSTextField.labelWithString_("")
     last_activity_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    last_activity_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+    # Bound the label width so a long error message can't expand la_inner
+    # past the panel's content width and break the equal-spacer centering.
+    try:
+        last_activity_label.widthAnchor().constraintLessThanOrEqualToAnchor_constant_(
+            library_content.widthAnchor(), -16.0
+        ).setActive_(True)
+    except Exception:
+        pass
     la_inner.addArrangedSubview_(last_activity_label)
     spinner = NSProgressIndicator.alloc().init()
     try:
