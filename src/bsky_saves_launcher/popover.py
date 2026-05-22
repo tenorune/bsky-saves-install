@@ -1180,6 +1180,8 @@ class StatusPopover:
         h["placeholder"].setHidden_(True)
         h["content"].setHidden_(False)
 
+        from AppKit import NSColor  # type: ignore[import-not-found]
+
         from bsky_saves_launcher import status as s
 
         h["handle_label"].setStringValue_(f"@{snap.library.handle}")
@@ -1254,19 +1256,40 @@ class StatusPopover:
 
         # In-flight detection: trust the GUI's current_state, which since
         # bsky-saves-gui v0.6.5-rc.4 reliably reflects all three hydration
-        # stores throughout the hydration phase (R11 in the cross-repo
-        # contract). No fallback inference needed at our dogfood scale.
+        # stores throughout the hydration phase (R11). The "error" branch
+        # is panel-owned per R12 point 5: render the persisted refresh
+        # error inline with red text + tooltip, sticky by construction
+        # (we just render current_state — the helper persists "error" to
+        # disk, so a launcher restart re-surfaces the same message).
+        error = snap.current_state == "error"
         refreshing = snap.current_state == "refreshing"
         hydrating = snap.current_state == "hydrating"
 
-        if refreshing:
+        if error:
+            err_msg = (
+                snap.last_activity.errors[0].message
+                if snap.last_activity and snap.last_activity.errors
+                else ""
+            )
+            la_str = f"⚠ Refresh failed: {err_msg}" if err_msg else "⚠ Refresh failed"
+        elif refreshing:
             la_str = "Refreshing…"
+            err_msg = ""
         elif hydrating:
             la_str = "Backing up…"
+            err_msg = ""
         else:
             la_str = s.format_last_activity(snap)
+            err_msg = ""
         h["last_activity_label"].setStringValue_(la_str or "")
         h["last_activity_label"].setHidden_(la_str is None)
+        try:
+            h["last_activity_label"].setTextColor_(
+                NSColor.systemRedColor() if error else NSColor.labelColor()
+            )
+            h["last_activity_label"].setToolTip_(err_msg)
+        except Exception:
+            pass
 
         spinning = refreshing or hydrating
         try:
@@ -1278,9 +1301,12 @@ class StatusPopover:
         except Exception:
             pass
 
-        # Errors badge: visible only when last_activity carries errors.
+        # Errors badge: visible only when last_activity carries errors
+        # AND we're not already rendering the inline "Refresh failed"
+        # message (R12) — otherwise the badge double-ups on the same
+        # refresh_error entry.
         errs = snap.last_activity.errors if snap.last_activity else []
-        if errs:
+        if errs and not error:
             n = sum(e.count for e in errs)
             label = "error" if n == 1 else "errors"
             try:
