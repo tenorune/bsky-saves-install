@@ -189,6 +189,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSGridCellPlacementCenter,
         NSGridCellPlacementLeading,
         NSGridCellPlacementTrailing,
+        NSGridRowAlignmentFirstBaseline,
         NSGridView,
         NSLevelIndicator,
         NSLevelIndicatorStyleContinuousCapacity,
@@ -320,6 +321,9 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     try:
         hydration_grid.setRowSpacing_(4.0)
         hydration_grid.setColumnSpacing_(8.0)
+        # Align all rows to a common baseline so per-row content height
+        # differences don't bleed into perceived row spacing.
+        hydration_grid.setRowAlignment_(NSGridRowAlignmentFirstBaseline)
     except Exception:
         pass
     # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, gridRow)
@@ -336,8 +340,17 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         # doesn't collapse when ratios are short ("0 / 0"). 160pt fits
         # inside the 300pt panel after 12pt insets, label, ratio, and
         # 8pt column spacing.
+        #
+        # Pin the bar's HEIGHT too — NSLevelIndicator's intrinsic
+        # height resolves slightly larger on the first layout pass than
+        # on subsequent ones, which made the Threads→Images gap render
+        # bigger than Images→Articles on the first popover open (the
+        # uneven spacing self-corrected after a More→Back round-trip
+        # forced a re-layout). A fixed height makes all rows uniform
+        # from the very first pass.
         try:
             bar.widthAnchor().constraintEqualToConstant_(160.0).setActive_(True)
+            bar.heightAnchor().constraintEqualToConstant_(12.0).setActive_(True)
         except Exception:
             pass
         ratio = NSTextField.labelWithString_("")
