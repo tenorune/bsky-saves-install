@@ -1,7 +1,6 @@
 {
-  "title": "Installer revision: Q8 (poll cadence) resolved + R10 archived + §4.5 staleness threshold pinned",
+  "title": "Installer revision: raise Q10 — last_activity.kind vs current_state semantics",
   "files": [
-    { "source": "coordination/installer-status-panel/installer-status-panel.md",          "target": "docs/installer-status-panel.md" },
-    { "source": "coordination/installer-status-panel/installer-status-panel-resolved.md", "target": "docs/installer-status-panel-resolved.md" }
+    { "source": "coordination/installer-status-panel/installer-status-panel.md", "target": "docs/installer-status-panel.md" }
   ]
 }

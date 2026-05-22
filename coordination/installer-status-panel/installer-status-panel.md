@@ -284,7 +284,22 @@ Multi-handle / multi-inventory edge cases (the maintainer setup explicitly hits 
 
 Numbered for ease of reference. Answers go inline once locked; resolved items move to [`installer-status-panel-resolved.md`](./installer-status-panel-resolved.md) with a backlink from the section they inform.
 
-*No open questions at this time. All phase-1 questions Q1–Q9 are resolved; rationale lives in the [resolved-questions archive](./installer-status-panel-resolved.md) as R1–R10. Reopen via a new numbered entry here if any decision needs revisiting.*
+**Q10 — Semantics of `last_activity.kind` vs `current_state`** *(raised by Installer 2026-05-22 for GUI team)*. Empirically the installer's panel observes `last_activity.kind = "idle"` between activity transitions (e.g., between fetch completion and hydration start; between consecutive hydration phases; during steady-state). At the same time, the GUI doesn't always set `current_state = "hydrating"` while hydration is active. This produces two related panel-side problems:
+
+1. **In-flight detection is unreliable.** The panel can't tell the GUI is mid-work from `current_state` alone, so it infers activity from observed hydration-progress deltas between polls (8s grace window after the last increase). Works, but means up to 8s of stale "Backing up…" persistence after hydration actually ends.
+
+2. **Restart loses last-activity context.** When the installer restarts, the helper rebinds and loads its persisted disk snapshot (persist mode). If the most recent GUI push had `last_activity.kind = "idle"`, the panel renders no last-activity line at all on restart — even though a real activity happened minutes ago.
+
+Proposed contract clarification, for the GUI team to confirm:
+
+- **`last_activity.kind`** = the last *completed* operation. Values: `"fetch" | "hydrate_articles" | "hydrate_threads" | "hydrate_images" | "manual_refresh"`. Monotonically advances through real operations; never reverts to `"idle"` after the first real operation (only resets to `"idle"` on `DELETE /status` / "Clear all data").
+- **`current_state`** = what the GUI is doing *right now*. Values: `"idle" | "refreshing" | "hydrating" | "error"`. This is the field that flips around during transitions; `"idle"` here is meaningful and expected during steady-state.
+
+The contract today (§4.4) lists `"idle"` as a valid `last_activity.kind`. Either keep that and clarify it's only for the fresh-install / post-clear case, or remove `"idle"` from the kind enum entirely and have the panel treat the field as required-once-an-operation-has-happened.
+
+Either resolution closes both panel-side problems: in-flight state stays canonical in `current_state`, and post-restart the persisted `last_activity` always has something meaningful to display.
+
+Installer-side: when the GUI lands the fix, the installer can retire its progress-delta inference (`hydration_is_progressing` + `_hydration_active_until` in `bsky_saves_launcher.popover`) and read `current_state` directly. No installer release needs to ship with the GUI change for this to work — the installer already handles both contract shapes.
 
 ## 8. Maintenance
 
@@ -311,6 +326,7 @@ When the design changes substantively (e.g., adopting phase 2's command flow), b
 | 2026-05-18 | CLI | Answered Q5 (concurs with 500ms floor), Q6 (concurs with 60s/15s), Q7 (proposes coalesced background flush ≤1/s, with `priority: "final"` and shutdown-synchronous exceptions). Restored §4.7 security model (clear-text rationale + MUST-NOT list + sensitivity check at PR time) — drafted on a primary-repo branch that wasn't included in the GUI revision's basis. Noted in §4.2 that `<config_dir>/bsky-saves/status.json` write path may use concurrency-safe per-write tmp names if Q7 resolves on coalesced writes. Raised Q9 re: missing `installer-status-panel-resolved.md` companion file (R3/R4/R5 backlinks 404 against coord repo's main). No body content changed beyond §4.7 restoration; Q7's implied §4.2 body update held until the question resolves. |
 | 2026-05-20 | GUI | Resolved Q5 in §4.3 (500ms floor locked, with note that GUI may tighten to 250ms later without contract change). Resolved Q6 in §4.3 (15s heartbeat / 60s TTL locked). Resolved Q7 in §4.2 (adopts CLI's coalesced background flush proposal; persist-mode in-memory updates immediately, disk flush ≤ 1/s, `priority: "final"` bypass via `navigator.sendBeacon` on `beforeunload`, shutdown-synchronous flush). Added `priority` optional top-level string field to §4.4 payload (string-enum for forward compat: `"final"` is the only recognized non-default value today). Added "RECOMMENDED in persist mode" trigger to §4.3 covering the beforeunload final push. Resolved Q9 by including `installer-status-panel-resolved.md` in this same PR (workflow now supports multi-file manifests). Moved Q5/Q6/Q7/Q9 to appendix as R6/R7/R8/R9. Q8 (installer poll cadence) remains open. |
 | 2026-05-21 | Installer | Resolved Q8 in §4.5: visibility-gated polling — one fetch on popover show, every 5s while the popover is visible, no polling while closed. Co-fetches `/status` on the same 5s timer that already drives the menu-bar state badge (no second timer, no extra wake-ups). Pinned the staleness-indicator threshold to 5 minutes (was "e.g., 5 minutes" suggestion). No payload, endpoint, auth, or schema changes. Moved Q8 to appendix as R10. §7 now empty (all phase-1 questions resolved). Updated Appendix A to check off the polling-cadence item. |
+| 2026-05-22 | Installer | Raised Q10: `last_activity.kind` semantics. Observed in v0.4.0 RC testing against `bsky-saves==0.6.8rc1` — the GUI emits `last_activity.kind = "idle"` between activity transitions and during steady-state, which (a) makes in-flight state inference unreliable from the panel side (currently mitigated by tracking hydration-progress deltas across polls with an 8s grace window), and (b) loses last-activity context on installer restart (persisted disk snapshot has `kind="idle"`, panel renders no last-activity line). Proposes clarifying that `last_activity.kind` is the last *completed* operation (never reverts to `"idle"` once anything has happened) and `current_state` is the right-now field. Awaiting GUI team review. No body content changes in this PR. |
 
 ---
 
