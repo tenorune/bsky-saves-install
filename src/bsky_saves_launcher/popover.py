@@ -301,15 +301,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     placeholder_headline = NSTextField.labelWithString_("No active library status yet.")
     placeholder_headline.setFont_(NSFont.boldSystemFontOfSize_(NSFont.smallSystemFontSize()))
     placeholder_headline.setAlignment_(NSTextAlignmentCenter)
-    placeholder_body = NSTextField.labelWithString_(
-        "Open BSky Saves and let it sync once — it'll show up here."
-    )
-    placeholder_body.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    placeholder_body.setAlignment_(NSTextAlignmentCenter)
-    placeholder_body.setUsesSingleLineMode_(False)
-    placeholder_body.setMaximumNumberOfLines_(2)
     placeholder.addArrangedSubview_(placeholder_headline)
-    placeholder.addArrangedSubview_(placeholder_body)
     placeholder.setHidden_(True)
     stack.addArrangedSubview_(placeholder)
 
@@ -1173,6 +1165,67 @@ class StatusPopover:
                 h["errors_badge_button"].setHidden_(True)
             except Exception:
                 pass
+
+        # Resize the Default panel to fit whatever's currently visible.
+        # Placeholder mode is much shorter than populated mode; without
+        # this the popover would carry the populated panel's height
+        # even when only the one-line placeholder is showing.
+        self._resize_default_to_content()
+
+    def _resize_default_to_content(self) -> None:
+        """Compute the Default view's intrinsic fitting size after a
+        visibility change and apply it to the view controller's
+        preferredContentSize. NSPopover observes preferredContentSize
+        and resizes its window in response. If the popover is currently
+        showing the Default panel and the size actually changed, also
+        animate via the existing tween for smooth motion."""
+        if self._default_controller is None or self._popover is None:
+            return
+        view = self._default_controller.view()
+        if view is None:
+            return
+        try:
+            # Force a layout pass so fittingSize reflects the new
+            # arranged-subview visibility before we read it.
+            view.layoutSubtreeIfNeeded()
+            fitting = view.fittingSize()
+            try:
+                target_w = fitting.width
+                target_h = fitting.height
+            except AttributeError:
+                target_w, target_h = fitting[0], fitting[1]
+            if not (target_w > 0 and target_h > 0):
+                return
+            old_size = self._default_controller.preferredContentSize()
+            try:
+                old_w = old_size.width
+                old_h = old_size.height
+            except AttributeError:
+                old_w, old_h = old_size[0], old_size[1]
+            # No-op if the size hasn't meaningfully changed.
+            if abs(target_h - old_h) < 1 and abs(target_w - old_w) < 1:
+                return
+            self._default_controller.setPreferredContentSize_((target_w, target_h))
+            # Animate the popover's contentSize if we're the visible
+            # controller — preferredContentSize alone snaps on Tahoe.
+            if self._content_controller is self._default_controller:
+                popover_size = self._popover.contentSize()
+                try:
+                    pw = popover_size.width
+                    ph = popover_size.height
+                except AttributeError:
+                    pw, ph = popover_size[0], popover_size[1]
+                if abs(target_h - ph) > 1 or abs(target_w - pw) > 1:
+                    self._start_size_tween(
+                        self._default_controller,
+                        pw,
+                        ph,
+                        target_w,
+                        target_h,
+                        duration_s=0.083,
+                    )
+        except Exception as exc:
+            print(f"[popover] resize-to-content failed: {exc!r}", file=sys.stderr)
 
     def _kick_status_fetch(self) -> None:
         """Immediate-on-show status fetch. Runs the blocking httpx call
