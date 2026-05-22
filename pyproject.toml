@@ -70,11 +70,11 @@ requires = [
     "httpx>=0.27",
     # The v0.4.0 Library panel requires the helper's GET /status endpoint
     # (per the cross-repo contract at bsky-saves-coordination:docs/
-    # installer-status-panel.md §4.2). 0.6.8rc1 ships the endpoint —
-    # pinned via wheel-version-bump auto-PR from tenorune/bsky-saves@v0.6.8rc1.
+    # installer-status-panel.md §4.2). 0.6.8rc2 ships the endpoint —
+    # pinned via wheel-version-bump auto-PR from tenorune/bsky-saves@v0.6.8rc2.
     # Confirm the live release ships GET /status before tagging v0.4.0
     # (coordinated three-way release per spec Appendix A).
-    "bsky-saves==0.6.8rc1",
+    "bsky-saves==0.6.8rc2",
 ]
 
 [tool.briefcase.app.bsky-saves-launcher.macOS]
