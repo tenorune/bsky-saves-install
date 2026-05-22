@@ -1268,8 +1268,10 @@ class StatusPopover:
         h["last_activity_label"].setStringValue_(la_str or "")
         h["last_activity_label"].setHidden_(la_str is None)
 
+        spinning = refreshing or hydrating
         try:
-            if refreshing or hydrating:
+            h["spinner"].setHidden_(not spinning)
+            if spinning:
                 h["spinner"].startAnimation_(None)
             else:
                 h["spinner"].stopAnimation_(None)
