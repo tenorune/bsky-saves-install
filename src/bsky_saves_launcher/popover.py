@@ -1177,12 +1177,61 @@ class StatusPopover:
         library; otherwise hides the placeholder and renders each row,
         independently hiding any sub-row whose payload field is absent.
         Handle is rendered with a leading "@" prefix.
+
+        Visibility toggles between placeholder and content are wrapped
+        in an NSAnimationContext that explicitly disables implicit
+        animations. Without this, the placeholder→content swap that
+        happens when the first snapshot arrives (a few frames after
+        the popover opens) is implicitly tweened by Core Animation
+        — NSVisualEffectView is layer-backed and propagates layer
+        backing to its descendants, so frame changes inside the VEV
+        pick up Core Animation's default ~0.25s implicit duration.
+        The visible symptom: on first open, library_content briefly
+        renders tight under the Local GUI button and then visibly
+        slides down to its steady position as the layout settles.
+        Wrapping the toggle in a zero-duration animation context with
+        allowsImplicitAnimation=False makes the transition snap.
         """
         h = self._library_handles
         if h is None:
             return
         snap = self._last_status_snapshot
 
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSAnimationContext,
+            )
+
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.currentContext().setDuration_(0.0)
+            try:
+                NSAnimationContext.currentContext().setAllowsImplicitAnimation_(False)
+            except Exception:
+                pass
+            _anim_grouped = True
+        except Exception:
+            _anim_grouped = False
+
+        try:
+            self._render_library_section_inner(h, snap)
+        finally:
+            if _anim_grouped:
+                try:
+                    from AppKit import (  # type: ignore[import-not-found]
+                        NSAnimationContext,
+                    )
+
+                    NSAnimationContext.endGrouping()
+                except Exception:
+                    pass
+
+    def _render_library_section_inner(self, h, snap) -> None:
+        """Body of _render_library_section. See that method for context.
+
+        Split out so the caller can wrap the entire body — including
+        the trailing _resize_default_to_content — in a single
+        NSAnimationContext group.
+        """
         if snap is None or snap.library is None or snap.library.handle is None:
             # Pick a placeholder headline that fits what's actually
             # happening. If the GUI says it's mid-refresh but hasn't
@@ -1205,6 +1254,7 @@ class StatusPopover:
                 )
             h["content"].setHidden_(True)
             h["placeholder"].setHidden_(False)
+            self._force_default_layout()
             return
 
         h["placeholder"].setHidden_(True)
@@ -1358,11 +1408,43 @@ class StatusPopover:
         # even when only the one-line placeholder is showing.
         self._resize_default_to_content()
 
+        # Synchronously settle all intrinsic content sizes so the next
+        # display tick uses final frames. Otherwise the visibility
+        # toggle above and the string-value updates lead to a deferred
+        # layout pass during which library_content briefly resolves at
+        # a smaller intrinsic height (text fields haven't measured
+        # their new strings yet), and the subsequent settle produces a
+        # visible frame change that Core Animation tweens.
+        self._force_default_layout()
+
     # Two precomputed heights for the Default panel — placeholder vs
     # populated. Switched between in _resize_default_to_content based on
     # which sub-stack is currently visible. Width is 300pt regardless.
     _DEFAULT_PLACEHOLDER_SIZE = (300.0, 160.0)
     _DEFAULT_POPULATED_SIZE = (300.0, 280.0)
+
+    def _force_default_layout(self) -> None:
+        """Force a synchronous layout pass on the Default panel's view tree.
+
+        Called at the end of every _render_library_section pass so any
+        intrinsic content size changes (string value updates,
+        visibility toggles) resolve to final frames before the next
+        display tick. Without this, the first frame after a
+        placeholder→content swap can render with stale intrinsic sizes
+        — library_content collapses smaller than its eventual content
+        height — and the subsequent settle produces a visible
+        Core-Animation-tweened frame change. NSVisualEffectView's
+        layer-backing propagates into the descendant tree, so any
+        deferred frame change here picks up CA's implicit ~0.25s
+        animation.
+        """
+        view = self._default_view
+        if view is None:
+            return
+        try:
+            view.layoutSubtreeIfNeeded()
+        except Exception:
+            pass
 
     def _resize_default_to_content(self) -> None:
         """Switch the Default panel's preferredContentSize between the
