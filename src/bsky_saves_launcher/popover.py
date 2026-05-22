@@ -232,6 +232,16 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     # the hydration bars to the bottom of the panel and leaving a gap
     # above. The hydration rows belong directly below the last-activity
     # line; any leftover space sits at the bottom of the stack.
+    # GravityAreas distribution + every child added via addView_inGravity_
+    # to the Top zone. addArrangedSubview_ on a GravityAreas stack lands
+    # children in the center gravity zone, which centers them vertically
+    # within whatever height the container is allocated. That looks fine
+    # on first show (library_content sizes tight to its content) but
+    # after a More→Back round-trip the outer stack's layout pass gives
+    # library_content more vertical space, and the center-gravity
+    # children re-center — moving the activity line and hydration rows
+    # downward. addView_inGravity_(_, Top) pins every child flush to the
+    # top of library_content so layout stays identical across navigation.
     library_content = NSStackView.alloc().init()
     library_content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     library_content.setDistribution_(NSStackViewDistributionGravityAreas)
@@ -239,18 +249,18 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     handle_label = NSTextField.labelWithString_("")
     handle_label.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
-    library_content.addArrangedSubview_(handle_label)
+    library_content.addView_inGravity_(handle_label, NSStackViewGravityTop)
 
     staleness_label = NSTextField.labelWithString_("")
     staleness_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    library_content.addArrangedSubview_(staleness_label)
+    library_content.addView_inGravity_(staleness_label, NSStackViewGravityTop)
 
     # Combined "1,247 saves (15 lost · 2 unsaved)" line. Renderer
     # builds an attributed string with the regular size for the count
     # and the small system font for the parenthetical retention info.
     total_label = NSTextField.labelWithString_("")
     total_label.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1))
-    library_content.addArrangedSubview_(total_label)
+    library_content.addView_inGravity_(total_label, NSStackViewGravityTop)
 
     # Last-activity row sits ABOVE the hydration bars so the current
     # state (Hydrating… / Refreshing… / "Fetch · N min ago") is the
@@ -301,7 +311,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     la_left_spacer.widthAnchor().constraintEqualToAnchor_(
         la_right_spacer.widthAnchor()
     ).setActive_(True)
-    library_content.addArrangedSubview_(la_row)
+    library_content.addView_inGravity_(la_row, NSStackViewGravityTop)
     # la_row must span library_content's full width for the equal-width
     # flex spacers to actually center la_inner on the panel. Without
     # this, la_row sizes to la_inner's intrinsic width and the spacers
@@ -366,7 +376,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         row.addArrangedSubview_(lab)
         row.addArrangedSubview_(bar)
         row.addArrangedSubview_(ratio)
-        library_content.addArrangedSubview_(row)
+        library_content.addView_inGravity_(row, NSStackViewGravityTop)
         hydration_rows.append((lab, bar, ratio, row))
 
     # Inter-group spacing within the library content block:
