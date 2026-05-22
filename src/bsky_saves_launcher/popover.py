@@ -231,38 +231,16 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     staleness_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     library_content.addArrangedSubview_(staleness_label)
 
+    # Combined "1,247 saves (15 lost · 2 unsaved)" line. Renderer
+    # builds an attributed string with the regular size for the count
+    # and the small system font for the parenthetical retention info.
     total_label = NSTextField.labelWithString_("")
     total_label.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1))
     library_content.addArrangedSubview_(total_label)
 
-    retention_label = NSTextField.labelWithString_("")
-    retention_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    library_content.addArrangedSubview_(retention_label)
-
-    # Three hydration rows in the contract-locked order
-    # (threads, images, articles per the user's UI preference).
-    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
-    hydration_rows = []
-    for label_text in ("Threads", "Images", "Articles"):
-        row = NSStackView.alloc().init()
-        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-        row.setSpacing_(8.0)
-        lab = NSTextField.labelWithString_(label_text)
-        lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-        bar = NSLevelIndicator.alloc().init()
-        try:
-            bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
-        except Exception:
-            pass
-        ratio = NSTextField.labelWithString_("")
-        ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-        row.addArrangedSubview_(lab)
-        row.addArrangedSubview_(bar)
-        row.addArrangedSubview_(ratio)
-        library_content.addArrangedSubview_(row)
-        hydration_rows.append((lab, bar, ratio, row))
-
-    # Last-activity row: text label + spinner + errors badge.
+    # Last-activity row sits ABOVE the hydration bars so the current
+    # state (Hydrating… / Refreshing… / "Fetch · N min ago") is the
+    # first thing the user reads after the totals.
     la_row = NSStackView.alloc().init()
     la_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     la_row.setSpacing_(6.0)
@@ -286,10 +264,29 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     errors_badge_button.setHidden_(True)
     la_row.addArrangedSubview_(errors_badge_button)
     library_content.addArrangedSubview_(la_row)
-    try:
-        library_content.setCustomSpacing_afterView_(8.0, hydration_rows[-1][3])
-    except Exception:
-        pass
+
+    # Three hydration rows in the contract-locked order
+    # (threads, images, articles per the user's UI preference).
+    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
+    hydration_rows = []
+    for label_text in ("Threads", "Images", "Articles"):
+        row = NSStackView.alloc().init()
+        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+        row.setSpacing_(8.0)
+        lab = NSTextField.labelWithString_(label_text)
+        lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        bar = NSLevelIndicator.alloc().init()
+        try:
+            bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
+        except Exception:
+            pass
+        ratio = NSTextField.labelWithString_("")
+        ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        row.addArrangedSubview_(lab)
+        row.addArrangedSubview_(bar)
+        row.addArrangedSubview_(ratio)
+        library_content.addArrangedSubview_(row)
+        hydration_rows.append((lab, bar, ratio, row))
 
     stack.addArrangedSubview_(library_content)
 
@@ -338,7 +335,6 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         "handle_label": handle_label,
         "staleness_label": staleness_label,
         "total_label": total_label,
-        "retention_label": retention_label,
         "hydration_rows": hydration_rows,
         "last_activity_label": last_activity_label,
         "spinner": spinner,
@@ -703,6 +699,11 @@ class StatusPopover:
         # _render_library_section updates from the cached snapshot.
         self._library_handles = None
         self._last_status_snapshot: StatusSnapshot | None = None
+        # Monotonic time until which we consider hydration "active" because
+        # we observed progress between the previous and current snapshot.
+        # Drives the spinner + "Hydrating…" label when the GUI's own
+        # current_state signal doesn't flip to "hydrating".
+        self._hydration_active_until: float | None = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -1008,11 +1009,26 @@ class StatusPopover:
         """Cache the latest snapshot and re-render the library section
         embedded in the Default panel.
 
+        Detects hydration activity by comparing the previous snapshot
+        with the new one — if any hydration channel's `completed` count
+        increased, mark hydration "active" for ~8 seconds (a bit over
+        the 5s poll interval, so a single tick of no progress doesn't
+        immediately flip back to "Idle"). This is needed because in
+        practice the GUI doesn't always set `current_state="hydrating"`
+        while hydration is running.
+
         Callable from the main thread only (the tray's 5s tick and
         popover's own fetch both marshal via NSOperationQueue before
         calling). Idempotent and safe to call before _construct has run
         — `_library_handles` is None-guarded.
         """
+        import time as _time
+
+        from bsky_saves_launcher import status as s
+
+        prev = self._last_status_snapshot
+        if snapshot is not None and s.hydration_is_progressing(prev, snapshot):
+            self._hydration_active_until = _time.monotonic() + 8.0
         self._last_status_snapshot = snapshot
         self._render_library_section()
 
@@ -1050,12 +1066,39 @@ class StatusPopover:
             h["staleness_label"].setHidden_(False)
 
         total = s.format_total_saves(snap)
-        h["total_label"].setStringValue_(total or "")
-        h["total_label"].setHidden_(total is None)
-
         retention = s.format_retention(snap)
-        h["retention_label"].setStringValue_(retention or "")
-        h["retention_label"].setHidden_(retention is None)
+        if total is None:
+            h["total_label"].setStringValue_("")
+            h["total_label"].setHidden_(True)
+        else:
+            h["total_label"].setHidden_(False)
+            if retention is None:
+                h["total_label"].setStringValue_(total)
+            else:
+                # "1,247 saves (15 lost · 2 unsaved)" — the parenthetical
+                # uses the small system font so the count remains the
+                # visual emphasis on the row.
+                from AppKit import (  # type: ignore[import-not-found]
+                    NSFont,
+                    NSFontAttributeName,
+                )
+                from Foundation import (  # type: ignore[import-not-found]
+                    NSMakeRange,
+                    NSMutableAttributedString,
+                )
+
+                paren = f" ({retention})"
+                text = total + paren
+                attr = NSMutableAttributedString.alloc().initWithString_(text)
+                big = NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1)
+                small = NSFont.systemFontOfSize_(NSFont.smallSystemFontSize())
+                attr.addAttribute_value_range_(
+                    NSFontAttributeName, big, NSMakeRange(0, len(total))
+                )
+                attr.addAttribute_value_range_(
+                    NSFontAttributeName, small, NSMakeRange(len(total), len(paren))
+                )
+                h["total_label"].setAttributedStringValue_(attr)
 
         rows_data = s.format_hydration_rows(snap)
         # strict=True asserts the invariant that the pre-built row list
@@ -1081,13 +1124,32 @@ class StatusPopover:
                 pass
             ratio.setStringValue_(f"{completed:,} / {total_v:,}")
 
-        la_str = s.format_last_activity(snap)
+        # In-flight detection. Two signals are OR'd together:
+        #   1. GUI's explicit current_state ("refreshing" / "hydrating").
+        #   2. Our observed hydration delta (set in update_library when
+        #      a channel's completed count goes up between polls). Covers
+        #      the case where the GUI marks current_state="idle" while
+        #      still hydrating — without #2 the label would say "Idle"
+        #      and the spinner would stay still.
+        import time as _time
+
+        refreshing = snap.current_state == "refreshing"
+        hydrating = snap.current_state == "hydrating" or (
+            self._hydration_active_until is not None
+            and _time.monotonic() < self._hydration_active_until
+        )
+
+        if refreshing:
+            la_str = "Refreshing…"
+        elif hydrating:
+            la_str = "Hydrating…"
+        else:
+            la_str = s.format_last_activity(snap)
         h["last_activity_label"].setStringValue_(la_str or "")
         h["last_activity_label"].setHidden_(la_str is None)
 
-        # Spinner visibility tracks current_state in-flight states.
         try:
-            if snap.current_state in ("refreshing", "hydrating"):
+            if refreshing or hydrating:
                 h["spinner"].startAnimation_(None)
             else:
                 h["spinner"].stopAnimation_(None)
