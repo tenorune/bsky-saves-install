@@ -193,6 +193,8 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSStackView,
         NSStackViewDistributionFill,
         NSStackViewDistributionGravityAreas,
+        NSStackViewGravityBottom,
+        NSStackViewGravityTop,
         NSTextAlignmentCenter,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
@@ -202,7 +204,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
-    stack.setDistribution_(NSStackViewDistributionFill)
+    stack.setDistribution_(NSStackViewDistributionGravityAreas)
     stack.setSpacing_(6.0)
     # Bottom inset gives the "More →" link breathing room from the
     # popover's bottom edge (symmetric with the 12pt setCustomSpacing
@@ -211,7 +213,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    stack.addArrangedSubview_(status_label)
+    stack.addView_inGravity_(status_label, NSStackViewGravityTop)
 
     local_gui_button = NSButton.buttonWithTitle_target_action_("Local GUI", None, None)
     local_gui_button.setBezelStyle_(1)
@@ -219,7 +221,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     targets_out.append(local_target)
     local_gui_button.setTarget_(local_target)
     local_gui_button.setAction_("invoke:")
-    stack.addArrangedSubview_(local_gui_button)
+    stack.addView_inGravity_(local_gui_button, NSStackViewGravityTop)
 
     # ── Library content block (visible when snapshot has a handle) ──
     # GravityAreas (not Fill) so arranged subviews keep their intrinsic
@@ -313,7 +315,20 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         library_content.addArrangedSubview_(row)
         hydration_rows.append((lab, bar, ratio, row))
 
-    stack.addArrangedSubview_(library_content)
+    # Inter-group spacing within the library content block:
+    # - 16pt between the saves counters (group 3) and the last
+    #   activity line (group 4)
+    # - 16pt between the last activity line (group 4) and the
+    #   hydration progress bars (group 5)
+    # Within-group spacing stays at the stack's 4pt default for the
+    # handle/staleness/total cluster.
+    try:
+        library_content.setCustomSpacing_afterView_(16.0, total_label)
+        library_content.setCustomSpacing_afterView_(16.0, la_row)
+    except Exception:
+        pass
+
+    stack.addView_inGravity_(library_content, NSStackViewGravityTop)
 
     # ── Placeholder (visible when snapshot is None or has no handle).
     # No CTA button — the Local GUI button above is the right action.
@@ -345,7 +360,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     ).setActive_(True)
     placeholder.addArrangedSubview_(headline_row)
     placeholder.setHidden_(True)
-    stack.addArrangedSubview_(placeholder)
+    stack.addView_inGravity_(placeholder, NSStackViewGravityTop)
 
     # Breathing room around key blocks:
     # - 12pt over the status row (above the Local GUI button).
@@ -372,7 +387,12 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     nav_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
     more_link = _make_link_button("More →", on_show_more, targets_out)
     nav_row.addArrangedSubview_(more_link)
-    stack.addArrangedSubview_(nav_row)
+    # Bottom-gravity placement: nav_row stays anchored to the bottom
+    # of the panel regardless of the content above it. Any leftover
+    # panel height shows as a gap between the library content (top
+    # gravity) and the More link (bottom gravity), which is what
+    # "groupings separated by space" looks like in practice.
+    stack.addView_inGravity_(nav_row, NSStackViewGravityBottom)
 
     # Start at the larger (populated) size; _render_library_section
     # switches between two precomputed heights when content/placeholder
