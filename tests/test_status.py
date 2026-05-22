@@ -194,10 +194,10 @@ def test_format_hydration_rows_filters_missing():
         }
     )
     rows = format_hydration_rows(snap)
-    # Order is stable: articles, threads, images. Threads absent → skipped.
+    # Order is stable: threads, images, articles. Threads absent → skipped.
     assert rows == [
-        ("Articles", 973, 1247),
         ("Images", 856, 1247),
+        ("Articles", 973, 1247),
     ]
 
 

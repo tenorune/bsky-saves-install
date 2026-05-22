@@ -20,7 +20,7 @@ import httpx
 STATUS_TIMEOUT_S = 2.0
 STALENESS_THRESHOLD_S = 300  # 5 minutes, locked by R10
 
-_HYDRATION_ORDER = ("articles", "threads", "images")
+_HYDRATION_ORDER = ("threads", "images", "articles")
 _KIND_LABELS = {
     "fetch": "Fetch",
     "hydrate_articles": "Hydrate articles",
