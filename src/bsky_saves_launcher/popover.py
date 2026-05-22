@@ -186,11 +186,6 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSButton,
         NSControlSizeSmall,
         NSFont,
-        NSGridCellPlacementCenter,
-        NSGridCellPlacementLeading,
-        NSGridCellPlacementTrailing,
-        NSGridRowAlignmentFirstBaseline,
-        NSGridView,
         NSLevelIndicator,
         NSLevelIndicatorStyleContinuousCapacity,
         NSProgressIndicator,
@@ -312,61 +307,57 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
 
     # Three hydration rows in the contract-locked order
     # (threads, images, articles per the user's UI preference).
-    # NSGridView keeps the label / bar / ratio columns vertically
-    # aligned across rows — three independent NSStackViews would size
-    # each row's columns to their own intrinsic widths, so "Articles"
-    # (wider) vs "Threads" (narrower) would shift the bar and ratio
-    # positions row-by-row.
-    hydration_grid = NSGridView.alloc().init()
-    try:
-        hydration_grid.setRowSpacing_(4.0)
-        hydration_grid.setColumnSpacing_(8.0)
-        # Align all rows to a common baseline so per-row content height
-        # differences don't bleed into perceived row spacing.
-        hydration_grid.setRowAlignment_(NSGridRowAlignmentFirstBaseline)
-    except Exception:
-        pass
-    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, gridRow)
+    # Each row is its own horizontal NSStackView with fixed-width label
+    # and ratio columns so the bars line up vertically across rows
+    # regardless of label/ratio text. NSGridView was tried for this and
+    # appeared to align columns correctly, but exhibited a first-render
+    # bug where the bar's intrinsic height resolved unevenly and made
+    # the Threads→Images gap render larger than Images→Articles until a
+    # re-layout (e.g. More→Back) fired. Per-row stacks with explicit
+    # column widths sidestep the grid's row-height calculation entirely.
+    # Column widths (sum 276pt = 300 panel - 24pt horizontal insets):
+    #   label  56pt right-aligned ("Articles" fits at small system font)
+    #   spacing 8pt (stack default)
+    #   bar   124pt (matches the la_inner visual span)
+    #   spacing 8pt
+    #   ratio  72pt right-aligned (fits "1,234 / 1,234")
+    _HYDRATION_LABEL_W = 56.0
+    _HYDRATION_BAR_W = 124.0
+    _HYDRATION_RATIO_W = 72.0
+    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
     hydration_rows = []
     for label_text in ("Threads", "Images", "Articles"):
+        row = NSStackView.alloc().init()
+        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+        row.setSpacing_(8.0)
         lab = NSTextField.labelWithString_(label_text)
         lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        lab.setAlignment_(NSTextAlignmentRight)
+        try:
+            lab.widthAnchor().constraintEqualToConstant_(_HYDRATION_LABEL_W).setActive_(True)
+        except Exception:
+            pass
         bar = NSLevelIndicator.alloc().init()
         try:
             bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
         except Exception:
             pass
-        # Give the bar a stable intrinsic width so the middle column
-        # doesn't collapse when ratios are short ("0 / 0"). 160pt fits
-        # inside the 300pt panel after 12pt insets, label, ratio, and
-        # 8pt column spacing.
-        #
-        # Pin the bar's HEIGHT too — NSLevelIndicator's intrinsic
-        # height resolves slightly larger on the first layout pass than
-        # on subsequent ones, which made the Threads→Images gap render
-        # bigger than Images→Articles on the first popover open (the
-        # uneven spacing self-corrected after a More→Back round-trip
-        # forced a re-layout). A fixed height makes all rows uniform
-        # from the very first pass.
         try:
-            bar.widthAnchor().constraintEqualToConstant_(160.0).setActive_(True)
-            bar.heightAnchor().constraintEqualToConstant_(12.0).setActive_(True)
+            bar.widthAnchor().constraintEqualToConstant_(_HYDRATION_BAR_W).setActive_(True)
         except Exception:
             pass
         ratio = NSTextField.labelWithString_("")
         ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
         ratio.setAlignment_(NSTextAlignmentRight)
-        grid_row = hydration_grid.addRowWithViews_([lab, bar, ratio])
-        hydration_rows.append((lab, bar, ratio, grid_row))
-    # Column placements: label trailing (so the right edge of the text
-    # aligns flush against the bar), bar centered, ratio leading.
-    try:
-        hydration_grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
-        hydration_grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementCenter)
-        hydration_grid.columnAtIndex_(2).setXPlacement_(NSGridCellPlacementLeading)
-    except Exception:
-        pass
-    library_content.addArrangedSubview_(hydration_grid)
+        try:
+            ratio.widthAnchor().constraintEqualToConstant_(_HYDRATION_RATIO_W).setActive_(True)
+        except Exception:
+            pass
+        row.addArrangedSubview_(lab)
+        row.addArrangedSubview_(bar)
+        row.addArrangedSubview_(ratio)
+        library_content.addArrangedSubview_(row)
+        hydration_rows.append((lab, bar, ratio, row))
 
     # Inter-group spacing within the library content block:
     # - 16pt between the saves counters (group 3) and the last
