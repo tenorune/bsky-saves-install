@@ -242,6 +242,51 @@ def test_format_last_activity_none_when_absent():
     assert format_last_activity(StatusSnapshot(), now=now) is None
 
 
+def test_format_last_activity_hydrating_overrides_stale_idle_kind():
+    """When current_state says we're hydrating, the label must reflect
+    that — even if last_activity.kind is still "idle" from the last
+    completed cycle. The user sees what's happening now."""
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        current_state="hydrating",
+        last_activity=LastActivity(
+            kind="idle",
+            finished_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC),
+            added=0,
+            removed=0,
+            errors=[],
+        ),
+    )
+    assert format_last_activity(snap, now=now) == "Hydrating…"
+
+
+def test_format_last_activity_refreshing_overrides():
+    """Same override applies for current_state == 'refreshing'."""
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        current_state="refreshing",
+        last_activity=LastActivity(kind="fetch", added=0, removed=0, errors=[]),
+    )
+    assert format_last_activity(snap, now=now) == "Refreshing…"
+
+
+def test_format_last_activity_idle_current_state_falls_through():
+    """When current_state is 'idle' (or absent), the function uses
+    last_activity.kind as before."""
+    now = dt.datetime(2026, 5, 17, 20, 17, 0, tzinfo=dt.UTC)
+    snap = StatusSnapshot(
+        current_state="idle",
+        last_activity=LastActivity(
+            kind="fetch",
+            finished_at=dt.datetime(2026, 5, 17, 20, 15, 0, tzinfo=dt.UTC),
+            added=3,
+            removed=0,
+            errors=[],
+        ),
+    )
+    assert format_last_activity(snap, now=now) == "Fetch · 2 min ago · +3 / −0"
+
+
 # --- format_staleness -------------------------------------------------------
 
 

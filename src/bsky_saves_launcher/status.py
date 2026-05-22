@@ -294,7 +294,20 @@ def _relative_time(then: dt.datetime, now: dt.datetime) -> str:
 def format_last_activity(
     snap: StatusSnapshot, *, now: dt.datetime | None = None
 ) -> str | None:
-    """Return a one-line summary of the last activity, or None if absent."""
+    """Return a one-line summary of the last activity, or None if absent.
+
+    When `snap.current_state` is `"refreshing"` or `"hydrating"`, the
+    helper is actively working — surface the in-flight state instead of
+    the recorded `last_activity.kind`. This handles the case where the
+    GUI marks `last_activity.kind = "idle"` between transitions even
+    though hydration is still running: the user sees what's happening
+    *now* rather than the last completed activity.
+    """
+    if snap.current_state == "hydrating":
+        return "Hydrating…"
+    if snap.current_state == "refreshing":
+        return "Refreshing…"
+
     la = snap.last_activity
     if la is None or la.kind is None:
         return None
