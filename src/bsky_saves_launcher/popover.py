@@ -411,6 +411,10 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         "errors_badge_button": errors_badge_button,
         "content": library_content,
         "placeholder": placeholder,
+        # Exposed for the renderer to swap the placeholder text between
+        # the empty-state default ("No active library status yet.") and
+        # the in-flight First-Fetch case ("Fetching library…").
+        "placeholder_headline": placeholder_headline,
     }
     return stack, status_label, library_handles
 
@@ -1085,7 +1089,10 @@ class StatusPopover:
         the 5s poll interval, so a single tick of no progress doesn't
         immediately flip back to "Idle"). This is needed because in
         practice the GUI doesn't always set `current_state="hydrating"`
-        while hydration is running.
+        while hydration is running (tracked in tenorune/bsky-saves-gui#85,
+        Q10 in the cross-repo contract). Once the GUI fix lands the
+        delta inference can be retired — see _DELTA_INFERENCE_RETIRABLE
+        below.
 
         Callable from the main thread only (the tray's 5s tick and
         popover's own fetch both marshal via NSOperationQueue before
@@ -1102,6 +1109,17 @@ class StatusPopover:
         self._last_status_snapshot = snapshot
         self._render_library_section()
 
+    # TODO(after-gui-fix): once bsky-saves-gui ships the Q10 fix
+    # (tenorune/bsky-saves-gui#85), current_state will reliably reflect
+    # hydration. At that point:
+    #   - Drop status.hydration_is_progressing + this class's
+    #     _hydration_active_until tracking.
+    #   - Simplify the hydrating-check in _render_library_section to
+    #     `snap.current_state == "hydrating"`.
+    # Leaving the inference in place until then so the panel works
+    # against pre-fix GUI builds.
+    _DELTA_INFERENCE_RETIRABLE = False
+
     def _render_library_section(self) -> None:
         """Populate the library section inside the Default panel.
 
@@ -1116,6 +1134,25 @@ class StatusPopover:
         snap = self._last_status_snapshot
 
         if snap is None or snap.library is None or snap.library.handle is None:
+            # Pick a placeholder headline that fits what's actually
+            # happening. If the GUI says it's mid-refresh but hasn't
+            # pushed a handle yet (the "First Fetch in progress" case
+            # flagged by the GUI team in tenorune/bsky-saves-gui#85),
+            # show that state instead of the generic empty-state line.
+            in_flight = snap is not None and snap.current_state in (
+                "refreshing",
+                "hydrating",
+            )
+            if in_flight:
+                h["placeholder_headline"].setStringValue_(
+                    "Fetching library…"
+                    if snap.current_state == "refreshing"
+                    else "Backing up library…"
+                )
+            else:
+                h["placeholder_headline"].setStringValue_(
+                    "No active library status yet."
+                )
             h["content"].setHidden_(True)
             h["placeholder"].setHidden_(False)
             return
