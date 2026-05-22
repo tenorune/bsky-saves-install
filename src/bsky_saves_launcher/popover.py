@@ -1265,6 +1265,9 @@ class StatusPopover:
         refreshing = snap.current_state == "refreshing"
         hydrating = snap.current_state == "hydrating"
 
+        # Default to empty; only the error branch overrides to the
+        # underlying refresh-error message (also used as the tooltip).
+        err_msg = ""
         if error:
             err_msg = (
                 snap.last_activity.errors[0].message
@@ -1274,13 +1277,10 @@ class StatusPopover:
             la_str = f"⚠ Refresh failed: {err_msg}" if err_msg else "⚠ Refresh failed"
         elif refreshing:
             la_str = "Refreshing…"
-            err_msg = ""
         elif hydrating:
             la_str = "Backing up…"
-            err_msg = ""
         else:
             la_str = s.format_last_activity(snap)
-            err_msg = ""
         h["last_activity_label"].setStringValue_(la_str or "")
         h["last_activity_label"].setHidden_(la_str is None)
         try:
