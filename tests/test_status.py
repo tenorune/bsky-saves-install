@@ -147,12 +147,12 @@ def test_fetch_status_ignores_unknown_fields():
 
 def test_format_total_saves_with_thousands_separator():
     snap = StatusSnapshot(library=LibraryInfo(total_saves=1247))
-    assert format_total_saves(snap) == "1,247 saves"
+    assert format_total_saves(snap) == "1,247 posts"
 
 
 def test_format_total_saves_singular():
     snap = StatusSnapshot(library=LibraryInfo(total_saves=1))
-    assert format_total_saves(snap) == "1 save"
+    assert format_total_saves(snap) == "1 post"
 
 
 def test_format_total_saves_none_when_absent():

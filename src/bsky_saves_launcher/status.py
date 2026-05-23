@@ -247,13 +247,18 @@ def _parse_snapshot(payload: dict[str, Any]) -> StatusSnapshot:
 
 
 def format_total_saves(snap: StatusSnapshot) -> str | None:
-    """Return "N saves" / "1 save" with thousands separator, or None if absent."""
+    """Return "N posts" / "1 post" with thousands separator, or None if absent.
+
+    The underlying field on the wire is `library.total_saves` per the
+    cross-repo contract; we render it user-facing as "post(s)" because
+    that's what the data actually is — saved Bluesky posts.
+    """
     n = snap.library.total_saves
     if n is None:
         return None
     if n == 1:
-        return "1 save"
-    return f"{n:,} saves"
+        return "1 post"
+    return f"{n:,} posts"
 
 
 def format_retention(snap: StatusSnapshot) -> str | None:
