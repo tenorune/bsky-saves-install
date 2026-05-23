@@ -1,6 +1,6 @@
 # Installer status panel — cross-repo coordination doc
 
-> **Status:** drafting (2026-05-22). Installer revision: R11 fully closed end-to-end — `current_state === "refreshing"` First Fetch render branch shipped, and the progress-delta inference fallback retired (no `/ping` version gate; internal dogfooding only). Q11 (`"error"` semantics) and Q12 (overwrite vs merge on startup) still awaiting CLI acceptance of the GUI-proposed resolutions in §7. No payload-shape changes.
+> **Status:** drafting (2026-05-23). Installer revision: raises Q13 — during a cold-start First Fetch (fresh pairing, no prior helper snapshot) the GUI doesn't push any in-flight state until the fetch completes, so the panel's `current_state === "refreshing"` render branch (already shipped per R11) has nothing to render and the user sees no feedback during the initial fetch. Proposes a single GUI push at fetch start with `library.handle: null` + `current_state: "refreshing"`. No payload-shape change.
 > **Lives at:** `bsky-saves-coordination:docs/installer-status-panel.md` (canonical). Mirrored as a draft in each primary repo's `coordination` branch and PRed back via cross-repo workflow.
 > **Audience:** maintainers of `bsky-saves` (helper / CLI), `bsky-saves-gui` (Svelte PWA), and `bsky-saves-install` (native macOS app + future Win/Linux installers).
 > **Scope:** the contract for the installer's status panel — what info it surfaces, where the info comes from, who's responsible for each leg.
@@ -253,6 +253,14 @@ Any PR that adds a field to the payload (whether in `bsky-saves-gui`'s push code
 
 This check applies symmetrically to phase 2's command payloads when that work lands.
 
+### 4.8 Startup-flow contract
+
+On GUI activation (the rising edge of the activation gate defined in `bsky-saves-gui:app/src/lib/status-pusher.ts`), the GUI pushes its restored `last_activity` and derived `current_state` unconditionally. The helper REPLACES its on-disk and in-memory snapshot with this push payload; it MUST NOT attempt to preserve any portion of its prior snapshot during a GUI-startup push. The GUI restores its own `last_activity` from local browser storage (`idb-keyval` under `status-pusher:last-activity:v1`, since v0.6.5-rc.4); a browser-data wipe on the user's side intentionally resets this to no-history.
+
+The "GUI startup wins, disk loses" direction is deliberate. The GUI is the only process that observes when operations actually start and finish; the helper just stores what the GUI told it. Merging the helper's on-disk snapshot back into the GUI's startup push (e.g., preserving an older `last_activity` because its `finished_at` is newer than anything the GUI restored from idb) would resurrect data the user explicitly cleared in the browser-wipe scenario, and would force both sides to encode timestamp-comparison logic. See [R13](./installer-status-panel-resolved.md#r13--gui-startup-snapshot-overwrite-vs-merge) for the design rationale.
+
+This contract is invariant-tested on the helper side: a wholesale-replacement assertion lives alongside the `POST /status` tests in `bsky-saves:tests/test_status.py` to prevent a future maintainer from "helpfully" adding a field-merge step.
+
 ## 5. Phase 2 — commands from panel to GUI
 
 Out of phase-1 scope. Sketch only — full design in a follow-up doc when phase 2 is on deck.
@@ -286,59 +294,33 @@ Numbered for ease of reference. Answers go inline once locked; resolved items mo
 
 Q10 (semantics of `last_activity.kind` vs `current_state`) resolved and moved to [R11](./installer-status-panel-resolved.md#r11--semantics-of-last_activitykind-vs-current_state). GUI fix shipped in v0.6.5-rc.4 and installer follow-ups landed on `claude/spec-installer-status-panel` in `tenorune/bsky-saves-install` (First Fetch `"refreshing"` render branch + retirement of the progress-delta inference fallback). All three R11 symptoms — mid-hydration `current_state`, post-restart `last_activity.kind`, and First Fetch blank-panel — verified resolved end-to-end against rc.4.
 
-**Q11 — Semantics of `current_state === "error"`** *(raised by CLI 2026-05-22, derived from Q10 resolution)*. The Q10 resolution enumerates `"error"` as a `current_state` value, but neither side has agreed on emission, stickiness, or rendering rules. Open sub-questions:
+Q11 (semantics of `current_state === "error"`) resolved and moved to [R12](./installer-status-panel-resolved.md#r12--semantics-of-current_state--error). GUI emission scoped to library-refresh-level failures only (per-asset hydration failures stay in `last_activity.errors[]`); snapshot-bound stickiness with the helper persisting `"error"` like any other state; rendering and retry affordance deferred to the panel team. The GUI tab-reload caveat — an `"error"` snapshot on the helper can be silently overwritten with `"idle"` on the next GUI activation push — is documented as a known limitation of the current GUI emission model and a candidate for a future improvement (idb persistence of the refresh-error similar to #85's `last_activity` persistence).
 
-- **Emission.** Which failures trigger `"error"` — auth failure, network failure, partial-hydration failure, persistence failure, all of the above?
-- **Stickiness.** Does `"error"` persist until cleared by an explicit user action / next successful operation, or auto-clear after a transient failure?
-- **Persistence behavior.** Does the helper mirror an `"error"` `current_state` to disk like other states, or only persist the last successful snapshot? If persisted, rehydration on restart re-renders the error — desired or surprising?
-- **Panel rendering.** Toast, persistent banner, badge on the activity row, or all of the above? Is there a "retry" affordance, and if so what does the panel dispatch back to the GUI?
+Q12 (GUI-startup snapshot: overwrite vs merge) resolved and moved to [R13](./installer-status-panel-resolved.md#r13--gui-startup-snapshot-overwrite-vs-merge). Locked **overwrite** — post-#85 the GUI's startup push carries `last_activity` restored from `idb-keyval`, so overwrite preserves the user's last-known state rather than clobbering it with empty defaults. Contract codified as new [§4.8](#48-startup-flow-contract); helper-side wholesale-replacement invariant pinned by a test in `bsky-saves:tests/test_status.py`.
 
-Required before any RC that emits `current_state === "error"` in anger.
+**Q13 — Initial-fetch in-flight push: missing `"refreshing"` signal before any library data exists** *(raised by Installer 2026-05-23, observed in v0.4.0 RC testing against `bsky-saves==0.6.8rc2` + `bsky-saves-gui` v0.6.5-rc.4)*. R11's panel-side closure shipped the `current_state === "refreshing"` render branch on the installer side (handles the "GUI has reported a refresh but no library handle yet" case). However, during a true cold-start First Fetch — i.e. a fresh pairing where the helper has never persisted any status — the GUI never pushes anything to the helper while the fetch is running. The panel polls `GET /status`, receives `404 {"error": "no status snapshot"}` for the entire duration of the fetch, and `_render_library_section` sees `snap = None` → renders the static placeholder "No active library status yet.". When the fetch finishes, the GUI pushes the full populated snapshot in a single push and the panel jumps from "No active library status yet." straight to the fully-loaded library view — no in-flight feedback is ever shown.
 
-> **GUI response (2026-05-22):** Current GUI behavior, for the contract to lock against:
->
-> | Sub-question | Current behavior in v0.6.5-rc.4 |
-> |---|---|
-> | **Emission triggers** | Exclusively `libraryRefreshState.status === 'error'`, set by `library-refresh.ts:163` when the orchestrate try-block throws. Concretely: auth failures, PDS / helper network failures during the fetch+enrich+threads orchestration, the BUG-#35 "fetch returned 0 saves against non-zero prior" guard, reconcile failures. **Per-asset hydration failures (image / article / thread) do NOT promote** to `current_state === "error"` — they're collected into `last_activity.errors[]` and the run continues. A single failed image fetch should not mark the entire library as in an error state. |
-> | **Stickiness (GUI-side)** | In-memory only. `current_state === "error"` lives in `libraryRefreshState` until the next `startLibraryRefresh` call flips it back to `'running'`. Does NOT survive a GUI tab reload — after restart, `libraryRefreshState` initializes to `{ status: 'idle' }`, so the GUI's first push after reload will report `current_state: 'idle'` (overwriting any prior `"error"` snapshot on the helper). |
-> | **Stickiness (helper-side disk)** | The helper persists whatever the GUI pushes, including `"error"`. The error snapshot survives a helper restart, but is overwritten on the next GUI push (which, post-reload, will be `"idle"` per the row above). |
-> | **Error text** | Already in the payload: `last_activity.errors[0]` carries `{ kind: 'refresh_error', message: <stringified throw>, count: 1 }` (set by `status-pusher.ts` on the refresh running→error edge). The panel reads the human-readable message from there; no payload-shape change needed. |
->
-> **GUI-proposed resolution** (CLI to accept or counter):
->
-> 1. **Emission scope.** Lock the contract to "`current_state === "error"` means the most recent library-refresh attempt threw." Per-asset hydration failures continue to surface via `last_activity.errors[]` only, without flipping `current_state`.
-> 2. **Stickiness model.** Snapshot-bound, not session-bound. `current_state === "error"` lives on the helper's persisted snapshot until the next GUI push overwrites it (which happens when a new refresh runs, OR when the GUI tab reloads and pushes its fresh-state push). The panel SHOULD render the persisted error until a new push replaces it — no client-side auto-clear timeout.
-> 3. **Persistence behavior.** The helper persists `"error"` like any other state. Re-rendering it after an installer/helper restart is the desired behavior: the user's last-known truth is that something failed, and silently dropping that signal would be worse than showing it.
-> 4. **GUI tab reload caveat.** Because the GUI doesn't re-emit `"error"` after a tab reload, an error snapshot on the helper can be silently overwritten with `"idle"` once the user reopens the GUI. This is a known limitation of the current GUI emission model and a candidate for a future improvement (e.g., persist the last refresh error to idb the same way #85 persisted `last_activity`). Calling it out in the contract; not blocking on it for Q11.
-> 5. **Rendering / retry affordance.** Panel-side decision. The GUI surfaces retry via its in-app banners (`AuthErrorBanner`, etc.); the panel can mirror or differ. No GUI-side change required for this sub-question.
->
-> No payload-shape changes proposed. Contract clarification only. Status: proposed-by-GUI; awaiting CLI acceptance.
+Contrast with subsequent refreshes: once a snapshot exists on the helper, manual-refresh paths correctly push `current_state="refreshing"` mid-flight and the panel renders "Refreshing…" inline. So the gap is specifically the **pre-first-snapshot** window.
 
-**Q12 — GUI-startup snapshot: overwrite vs merge** *(raised by CLI 2026-05-22, derived from Q10 Bug 2 root cause)*. Q10's root cause for Bug 2 surfaces a separate question independent of the kind/state semantics: every GUI startup currently clobbers the helper's on-disk snapshot with the GUI's just-initialized in-memory state. After the Q10 fix the clobbered value will at least be accurate — but the underlying "GUI startup wins, disk loses" contract isn't explicit anywhere in §4.4 or §6.
+Symptom is identical to what R11 was originally framed to solve, just at a different layer: R11 fixed the panel render branch; Q13 asks whether the GUI can also push a minimal in-flight snapshot at the *start* of the initial fetch so that branch has something to render.
 
-Options:
+Proposed resolution (panel-side perspective, awaiting GUI team's response):
 
-- **Overwrite (status quo, post-fix).** GUI startup push always wins. Simple. Implies the GUI's just-started in-memory state is always authoritative — fine if the GUI restores its own state quickly on startup.
-- **Merge.** GUI startup push respects on-disk `last_activity` if its `finished_at` is newer than anything the GUI has in memory. Safer against future regressions where the GUI's startup state momentarily lags. More complex; requires a timestamp comparison and conflict rule.
+- **At the start** of `initialFetchSaves()` (or whatever the equivalent function is named in `bsky-saves-gui`'s library-refresh orchestrator), the pusher emits one synchronous push with:
+  - `current_state: "refreshing"`
+  - `library.did: <known-from-sign-in>` (required so the panel can identify the slot — even if no other library fields are known yet)
+  - `library.handle: null` (or absent) — keeps the panel in the placeholder branch, where the existing in-flight render path will display "Fetching library…"
+  - `last_activity`: whatever's currently in memory (idle sentinel if literally first-ever start)
+  - `priority`: default (not `"final"`; this isn't a synchronous-flush case)
+- No payload-shape change — `library.handle: null` is already documented as the "unidentified" state. Just an additional push trigger added to §4.3's list.
 
-Either is defensible. The choice should be documented in §4.4 or §6 (whichever section governs the startup-flow contract).
+Alternatives considered and rejected by the installer side:
 
-> **GUI response (2026-05-22):** GUI proposes **overwrite (status quo, post-#85)**.
->
-> Post-#85, the GUI's startup push payload is `{ current_state: derived-from-stores, last_activity: restored-from-idb-keyval }`. `last_activity` is no longer the in-memory idle default — it's the actual last-known activity restored from local browser storage at `initStatusPusher` time. So overwrite is no longer "GUI's just-initialized empty state wins" but "GUI's restored-from-local-disk state wins".
->
-> Reasons to keep overwrite over moving to merge:
->
-> 1. **Canonical-source ownership stays clean.** The GUI is the only process that observes when operations actually start and finish; the helper just stores what the GUI told it. Merge forces both sides to encode timestamp-comparison logic. Overwrite keeps the contract one-directional.
-> 2. **Merge requires a startup `GET /status`.** Adds a localhost round-trip the GUI doesn't currently make — the GUI never reads `/status`, only writes it. Adding a read endpoint to the activation-rising-edge path widens the contract surface for marginal benefit.
-> 3. **The single legitimate divergence scenario is "user wiped browser data, helper still has older snapshot on disk."** Overwriting with idle / no-history is the correct behavior in that case — "this browser has no history" is what the wipe means. Merge would resurrect data the user explicitly cleared.
-> 4. **The helper-crashed-and-lost-disk-state scenario is symmetric.** Helper boots with empty disk; GUI's next push repopulates it. Merge doesn't help here either way.
->
-> **Proposed contract text** (drop into §4.4 after the field reference list, or into a new §4.8 "Startup flow" if a separate section is preferred):
->
-> > **Startup-flow contract.** On GUI activation (the rising edge of the activation gate defined in `bsky-saves-gui:app/src/lib/status-pusher.ts`), the GUI pushes its restored `last_activity` and derived `current_state` unconditionally. The helper REPLACES its on-disk and in-memory snapshot with this push payload; it MUST NOT attempt to preserve any portion of its prior snapshot during a GUI-startup push. The GUI restores its own `last_activity` from local browser storage (`idb-keyval` under `status-pusher:last-activity:v1`, since v0.6.5-rc.4); a browser-data wipe on the user's side intentionally resets this to no-history.
->
-> Status: proposed-by-GUI; awaiting CLI acceptance.
+1. **Launcher polls `/ping` for GUI presence and synthesizes an in-flight state.** Rejected: cross-cuts the contract, makes the panel's source of truth split between `/status` and `/ping`, and papers over a real push-trigger gap.
+2. **Just show "Waiting for GUI to connect…" on 404.** Rejected: indistinguishable from the legitimate "no GUI ever connected" empty state; bad UX during the common first-fetch flow which IS the most common time a user opens the panel.
+3. **Add a `/status` long-poll endpoint.** Rejected: scope creep, contract widening.
+
+Status: proposed-by-Installer, awaiting GUI acceptance. No payload-shape change.
 
 ## 8. Maintenance
 
@@ -369,6 +351,8 @@ When the design changes substantively (e.g., adopting phase 2's command flow), b
 | 2026-05-22 | CLI | Resolved Q10 in §7 with GUI confirmation (tenorune/bsky-saves-gui#85): both behaviors confirmed as GUI-side bugs (root causes in `deriveCurrentState` and `currentActivity` startup default); proposed semantics adopted verbatim. Tightened `current_state` and `last_activity.kind` field notes in §4.4 (semantics, not enums — `"idle"` retained as fresh-install / post-clear sentinel for `last_activity.kind`). Captured GUI team's panel-side follow-up (verify `current_state === "refreshing"` render branch) and the optional installer-side cleanup gating note in Q10's resolution. Raised Q11 (`"error"` semantics — emission/stickiness/persistence/rendering) and Q12 (GUI-startup snapshot overwrite vs merge contract) in §7. |
 | 2026-05-22 | GUI | Q10 fix shipped: tenorune/bsky-saves-gui#85 merged to main, released in v0.6.5-rc.4. Moved Q10 from §7 to appendix as R11 with implementation status (mid-hydration + post-restart symptoms verified resolved against rc.4; First Fetch blank-panel symptom awaits the installer's `current_state === "refreshing"` render branch). Corrected the §4.4 `current_state` field note's pre-fix version reference (≤ v0.6.5-rc.3, not ≤ rc.4 — rc.4 is the first build with the fix). Answered Q11 with GUI-proposed resolution: emission scoped to library-refresh-level failures only (per-asset hydration failures stay in `last_activity.errors[]`); snapshot-bound stickiness with helper persisting `"error"` like any other state; rendering/retry deferred to panel team; called out the GUI-tab-reload caveat (current GUI doesn't re-emit `"error"` after reload, so a snapshot can be silently overwritten with `"idle"` — known limitation, candidate for a future improvement). Answered Q12 with GUI-proposed resolution: keep overwrite (status quo, post-#85). Proposed contract text for the startup-flow contract; suggested placement in §4.4 or a new §4.8. Q11 and Q12 both status: proposed-by-GUI, awaiting CLI acceptance. No payload-shape changes in this revision. |
 | 2026-05-22 | Installer | Closed R11 end-to-end. Shipped the `current_state === "refreshing"` render branch on `claude/spec-installer-status-panel` (`bsky-saves-install`): placeholder headline reads "Fetching library…" pre-handle, last-activity row reads "Refreshing…" / "Backing up…" inline once a library is identified (commit `73e035e`). Retired the progress-delta inference fallback (`status.hydration_is_progressing`, `StatusPopover._hydration_active_until`, the delta-detection branch in `update_library`, and associated tests) — panel now reads `snap.current_state` directly (commit `ec32356`). No `/ping`-based `gui_bundled` gate added: no external installer user base, internal dogfooding only. Updated R11 verification + §4.4 `current_state` field note + §3 status header to reflect closure. No payload, endpoint, auth, or schema changes. |
+| 2026-05-22 | CLI | Accepted GUI's Q11 and Q12 resolutions; moved Q11 → [R12](./installer-status-panel-resolved.md#r12--semantics-of-current_state--error) and Q12 → [R13](./installer-status-panel-resolved.md#r13--gui-startup-snapshot-overwrite-vs-merge). Added §4.8 (Startup-flow contract) with the GUI's proposed contract text describing the helper's wholesale-replacement obligation on GUI activation pushes. Cross-referenced the helper-side invariant test landing on `bsky-saves:tests/test_status.py` (separate commit on `tenorune/bsky-saves@main`). No payload-shape changes; §4.4 unchanged in this revision. |
+| 2026-05-23 | Installer | Raised Q13: cold-start First Fetch in-flight push gap. Observed in v0.4.0 RC testing on a fresh pairing — the helper has no persisted snapshot, the GUI doesn't push any in-flight state during the initial fetch, and the panel polls `GET /status` to a 404 (`{"error": "no status snapshot"}`) throughout the entire fetch duration. R11's panel-side render branch is in place and verified working on manual-refresh flows, but it has nothing to render in the cold-start window because the GUI hasn't pushed any `current_state` yet. Proposes a single push at the start of the initial fetch with `library.handle: null` + `current_state: "refreshing"` so the existing panel branch can render "Fetching library…" during the cold-start window. No payload-shape change; just an added push trigger in §4.3. Awaiting GUI team review. Updated §3 status header. |
 
 ---
 
