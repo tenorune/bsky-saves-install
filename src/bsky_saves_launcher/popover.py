@@ -182,7 +182,6 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     `_render_library_section`.
     """
     from AppKit import (  # type: ignore[import-not-found]
-        NSBezelStyleRounded,
         NSButton,
         NSControlSizeSmall,
         NSFont,
@@ -345,10 +344,14 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     spinner.setIndeterminate_(True)
     spinner.setDisplayedWhenStopped_(False)
     la_inner.addArrangedSubview_(spinner)
-    errors_badge_button = NSButton.buttonWithTitle_target_action_("", None, None)
-    errors_badge_button.setBezelStyle_(NSBezelStyleRounded)
-    errors_badge_button.setHidden_(True)
-    la_inner.addArrangedSubview_(errors_badge_button)
+    # Errors badge: a plain colored text label (NOT a button) so it reads
+    # as info rather than a control. Earlier iterations used NSButton
+    # which made it look pressable, but clicking did nothing — the
+    # tooltip carrying the per-error detail was the only way in.
+    errors_badge_label = NSTextField.labelWithString_("")
+    errors_badge_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    errors_badge_label.setHidden_(True)
+    la_inner.addArrangedSubview_(errors_badge_label)
     la_row.addArrangedSubview_(la_inner)
     la_row.addArrangedSubview_(la_right_spacer)
     la_left_spacer.widthAnchor().constraintEqualToAnchor_(
@@ -544,7 +547,7 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         "hydration_rows": hydration_rows,
         "last_activity_label": last_activity_label,
         "spinner": spinner,
-        "errors_badge_button": errors_badge_button,
+        "errors_badge_label": errors_badge_label,
         "content": library_content,
         "placeholder": placeholder,
         # Exposed for the renderer to swap the placeholder text between
@@ -1441,21 +1444,24 @@ class StatusPopover:
         # Errors badge: visible only when last_activity carries errors
         # AND we're not already rendering the inline "Refresh failed"
         # message (R12) — otherwise the badge double-ups on the same
-        # refresh_error entry.
+        # refresh_error entry. Rendered as a red text label (not a
+        # button) so it reads as info, not a control; tooltip carries
+        # the per-error kind/message/count detail.
         errs = snap.last_activity.errors if snap.last_activity else []
         if errs and not error:
             n = sum(e.count for e in errs)
             label = "error" if n == 1 else "errors"
             try:
-                h["errors_badge_button"].setTitle_(f"{n} {label}")
-                h["errors_badge_button"].setHidden_(False)
+                h["errors_badge_label"].setStringValue_(f"· {n} {label}")
+                h["errors_badge_label"].setTextColor_(NSColor.systemRedColor())
+                h["errors_badge_label"].setHidden_(False)
                 tip = "\n".join(f"{e.kind}: {e.message} (×{e.count})" for e in errs)
-                h["errors_badge_button"].setToolTip_(tip)
+                h["errors_badge_label"].setToolTip_(tip)
             except Exception:
                 pass
         else:
             try:
-                h["errors_badge_button"].setHidden_(True)
+                h["errors_badge_label"].setHidden_(True)
             except Exception:
                 pass
 
