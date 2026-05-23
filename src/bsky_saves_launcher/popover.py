@@ -1626,6 +1626,42 @@ class StatusPopover:
                 except Exception:
                     pass
                 self._size_tween_timer = None
+                # When tweening back to the Default panel, the per-tick
+                # VEV resize during the tween drives the inner stack's
+                # frame via its autoresize mask. Across that resize
+                # sequence NSStackView's GravityAreas distribution does
+                # not reliably honor library_content's required vertical
+                # huggingPriority — library_content ends the tween
+                # inflated, with its top-gravity children pushed toward
+                # the bottom of the inflated container (visibly: the
+                # hydration bars sit just above the More → link instead
+                # of tight under the Local GUI button).
+                #
+                # A bare layoutSubtreeIfNeeded() at tween-end was tried
+                # and did NOT resolve the inflation — re-running the
+                # same layout algorithm on the cached frames just
+                # re-resolves to the same inflated state. What does
+                # resolve it: re-running _render_library_section in
+                # full. That path re-applies visibility on every
+                # arranged subview (setHidden_ inside a stack view
+                # forces the stack to recompute its arranged-subview
+                # contribution to intrinsic size), re-resolves
+                # preferredContentSize via _resize_default_to_content,
+                # and ends with a layoutSubtreeIfNeeded — wrapped in
+                # the same zero-duration NSAnimationContext that makes
+                # step-1's first render snap rather than tween. This
+                # is exactly the code path that produced the desired
+                # tight-at-top layout on step 1, so replaying it on
+                # Back→Default gives the same result. Step 1's layout
+                # is unaffected — first-open never runs the size tween.
+                if controller is self._default_controller:
+                    try:
+                        self._render_library_section()
+                    except Exception as exc:
+                        print(
+                            f"[popover] post-tween re-render failed: {exc!r}",
+                            file=sys.stderr,
+                        )
 
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
