@@ -194,7 +194,6 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSStackView,
         NSStackViewDistributionFill,
         NSStackViewDistributionGravityAreas,
-        NSStackViewGravityBottom,
         NSStackViewGravityTop,
         NSTextAlignmentCenter,
         NSTextAlignmentRight,
@@ -204,18 +203,53 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
         NSView,
     )
 
+    # Outer stack uses Fill distribution + an explicit flex-spacer view
+    # to deterministically anchor nav_row at the bottom and pack the
+    # content (status_label, local_gui_button, library_content/
+    # placeholder) at the top. GravityAreas was tried first but its
+    # leftover-space heuristic behaves differently on first-open vs.
+    # after a contentViewController-swap + size-tween round-trip
+    # (More→Back): on the second path library_content ends up inflated,
+    # pushing the hydration bars down toward the More link. Fill +
+    # high content-hugging on every "real" child + low hugging on a
+    # transparent spacer between content and nav_row removes that
+    # gravity-zone ambiguity — the spacer absorbs all leftover height,
+    # so nav_row stays pinned to the bottom and library_content stays
+    # tight to its intrinsic content height regardless of which path
+    # produced the layout pass.
+    NSLayoutConstraintOrientationVertical = 1
+    NSLayoutPriorityRequired = 1000.0
+    NSLayoutPriorityDefaultLow = 250.0
+
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
-    stack.setDistribution_(NSStackViewDistributionGravityAreas)
+    stack.setDistribution_(NSStackViewDistributionFill)
     stack.setSpacing_(6.0)
     # Bottom inset gives the "More →" link breathing room from the
     # popover's bottom edge (symmetric with the 12pt setCustomSpacing
     # above the link, near the placeholder/content block).
     stack.setEdgeInsets_((6, 12, 12, 12))
 
+    def _hug_vertical(view, priority=NSLayoutPriorityRequired):
+        # Make a Fill-distributed arranged subview refuse vertical
+        # stretching, so leftover height is forced into the explicit
+        # flex spacer rather than redistributed across content.
+        try:
+            view.setHuggingPriority_forOrientation_(
+                priority, NSLayoutConstraintOrientationVertical
+            )
+        except Exception:
+            try:
+                view.setContentHuggingPriority_forOrientation_(
+                    priority, NSLayoutConstraintOrientationVertical
+                )
+            except Exception:
+                pass
+
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
-    stack.addView_inGravity_(status_label, NSStackViewGravityTop)
+    _hug_vertical(status_label)
+    stack.addArrangedSubview_(status_label)
 
     local_gui_button = NSButton.buttonWithTitle_target_action_("Local GUI", None, None)
     local_gui_button.setBezelStyle_(1)
@@ -223,7 +257,8 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     targets_out.append(local_target)
     local_gui_button.setTarget_(local_target)
     local_gui_button.setAction_("invoke:")
-    stack.addView_inGravity_(local_gui_button, NSStackViewGravityTop)
+    _hug_vertical(local_gui_button)
+    stack.addArrangedSubview_(local_gui_button)
 
     # ── Library content block (visible when snapshot has a handle) ──
     # GravityAreas (not Fill) so arranged subviews keep their intrinsic
@@ -246,21 +281,14 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     library_content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     library_content.setDistribution_(NSStackViewDistributionGravityAreas)
     library_content.setSpacing_(4.0)
-    # Lock library_content to its intrinsic vertical content height —
-    # the outer stack must not be able to inflate it. Without this lock,
-    # a resize round-trip (More→Back) can leave library_content taller
-    # than its content and the activity line drifts inside the inflated
-    # container. Required huggingPriority makes any expansion attempt
-    # unsatisfiable, so library_content stays tight to its visible
-    # children regardless of available outer-stack space.
-    try:
-        NSLayoutConstraintOrientationVertical = 1
-        NSLayoutPriorityRequired = 1000.0
-        library_content.setHuggingPriority_forOrientation_(
-            NSLayoutPriorityRequired, NSLayoutConstraintOrientationVertical
-        )
-    except Exception:
-        pass
+    # High vertical hugging on library_content itself: combined with the
+    # outer stack's Fill distribution and the explicit flex spacer just
+    # below, this guarantees the outer stack never inflates
+    # library_content past its intrinsic height. The spacer (low
+    # hugging) is the only arranged subview willing to take leftover
+    # space, so all extra panel height lands between library_content
+    # and nav_row regardless of which layout path ran.
+    _hug_vertical(library_content)
 
     handle_label = NSTextField.labelWithString_("")
     handle_label.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
@@ -407,7 +435,8 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     except Exception:
         pass
 
-    stack.addView_inGravity_(library_content, NSStackViewGravityTop)
+    _hug_vertical(library_content)
+    stack.addArrangedSubview_(library_content)
 
     # ── Placeholder (visible when snapshot is None or has no handle).
     # No CTA button — the Local GUI button above is the right action.
@@ -439,7 +468,35 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     ).setActive_(True)
     placeholder.addArrangedSubview_(headline_row)
     placeholder.setHidden_(True)
-    stack.addView_inGravity_(placeholder, NSStackViewGravityTop)
+    _hug_vertical(placeholder)
+    stack.addArrangedSubview_(placeholder)
+
+    # Explicit flex spacer: a transparent NSView with low vertical
+    # hugging that absorbs all leftover panel height. This is what
+    # keeps the content (status_label, local_gui_button,
+    # library_content/placeholder) packed at the top of the panel and
+    # nav_row pinned to the bottom — without depending on NSStackView's
+    # gravity-zone leftover-space distribution, which behaves
+    # inconsistently across the contentViewController-swap + size-tween
+    # path (More→Back). With Fill distribution + every "real" child at
+    # high vertical hugging + this spacer at low vertical hugging, all
+    # extra height has exactly one place to go.
+    flex_spacer = NSView.alloc().init()
+    try:
+        flex_spacer.setContentHuggingPriority_forOrientation_(
+            NSLayoutPriorityDefaultLow, NSLayoutConstraintOrientationVertical
+        )
+    except Exception:
+        pass
+    # Zero spacing around the spacer — the existing setCustomSpacing
+    # calls (12pt over status_label, 16pt under local_gui_button, 12pt
+    # under placeholder) own the visible gap geometry. The spacer
+    # itself just consumes flex height.
+    stack.addArrangedSubview_(flex_spacer)
+    try:
+        stack.setCustomSpacing_afterView_(0.0, flex_spacer)
+    except Exception:
+        pass
 
     # Breathing room around key blocks:
     # - 12pt over the status row (above the Local GUI button).
@@ -458,20 +515,20 @@ def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
     except Exception:
         pass
 
-    # Bottom-right "More →" link.
+    # Bottom-right "More →" link. Pinned to the bottom of the panel by
+    # the explicit flex_spacer above (which absorbs all leftover
+    # vertical space); high vertical hugging keeps nav_row at its
+    # intrinsic single-row height so Fill distribution doesn't stretch
+    # it.
     nav_row = NSStackView.alloc().init()
     nav_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     nav_row.setDistribution_(NSStackViewDistributionFill)
     nav_row.setSpacing_(0)
-    nav_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
+    nav_row.addArrangedSubview_(NSView.alloc().init())  # horizontal flex spacer
     more_link = _make_link_button("More →", on_show_more, targets_out)
     nav_row.addArrangedSubview_(more_link)
-    # Bottom-gravity placement: nav_row stays anchored to the bottom
-    # of the panel regardless of the content above it. Any leftover
-    # panel height shows as a gap between the library content (top
-    # gravity) and the More link (bottom gravity), which is what
-    # "groupings separated by space" looks like in practice.
-    stack.addView_inGravity_(nav_row, NSStackViewGravityBottom)
+    _hug_vertical(nav_row)
+    stack.addArrangedSubview_(nav_row)
 
     # Start at the larger (populated) size; _render_library_section
     # switches between two precomputed heights when content/placeholder
@@ -1626,42 +1683,15 @@ class StatusPopover:
                 except Exception:
                     pass
                 self._size_tween_timer = None
-                # When tweening back to the Default panel, the per-tick
-                # VEV resize during the tween drives the inner stack's
-                # frame via its autoresize mask. Across that resize
-                # sequence NSStackView's GravityAreas distribution does
-                # not reliably honor library_content's required vertical
-                # huggingPriority — library_content ends the tween
-                # inflated, with its top-gravity children pushed toward
-                # the bottom of the inflated container (visibly: the
-                # hydration bars sit just above the More → link instead
-                # of tight under the Local GUI button).
-                #
-                # A bare layoutSubtreeIfNeeded() at tween-end was tried
-                # and did NOT resolve the inflation — re-running the
-                # same layout algorithm on the cached frames just
-                # re-resolves to the same inflated state. What does
-                # resolve it: re-running _render_library_section in
-                # full. That path re-applies visibility on every
-                # arranged subview (setHidden_ inside a stack view
-                # forces the stack to recompute its arranged-subview
-                # contribution to intrinsic size), re-resolves
-                # preferredContentSize via _resize_default_to_content,
-                # and ends with a layoutSubtreeIfNeeded — wrapped in
-                # the same zero-duration NSAnimationContext that makes
-                # step-1's first render snap rather than tween. This
-                # is exactly the code path that produced the desired
-                # tight-at-top layout on step 1, so replaying it on
-                # Back→Default gives the same result. Step 1's layout
-                # is unaffected — first-open never runs the size tween.
-                if controller is self._default_controller:
-                    try:
-                        self._render_library_section()
-                    except Exception as exc:
-                        print(
-                            f"[popover] post-tween re-render failed: {exc!r}",
-                            file=sys.stderr,
-                        )
+                # Layout stability across the Back→Default tween is now
+                # owned by the outer stack's structural setup
+                # (Fill distribution + explicit flex spacer +
+                # high vertical hugging on every "real" arranged
+                # subview). The flex spacer absorbs all leftover
+                # height, so library_content cannot be inflated by the
+                # tween's per-tick VEV resize regardless of how
+                # NSStackView resolves its distribution heuristics. No
+                # post-tween re-render needed.
 
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)
