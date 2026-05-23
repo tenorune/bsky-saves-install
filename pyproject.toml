@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "bsky-saves-launcher"
-version = "0.3.0"
+version = "0.4.0"
 description = "Menu-bar launcher that supervises bsky-saves serve for the bsky-saves-install macOS app."
 requires-python = ">=3.11"
 authors = [{ name = "tenorune" }]
@@ -45,7 +45,7 @@ addopts = "-q"
 [tool.briefcase]
 project_name = "BSky Saves"
 bundle = "net.lightseed"
-version = "0.3.0"
+version = "0.4.0"
 url = "https://github.com/tenorune/bsky-saves-install"
 license = "MIT"
 author = "tenorune"
@@ -68,6 +68,11 @@ requires = [
     "pystray>=0.19",
     "Pillow>=10",
     "httpx>=0.27",
+    # The v0.4.0 Library panel requires the helper's GET /status endpoint
+    # (per the cross-repo contract at bsky-saves-coordination:docs/
+    # installer-status-panel.md §4.2). bsky-saves v0.6.8 ships the
+    # endpoint as the first stable release; pinned via wheel-version-bump
+    # auto-PR from tenorune/bsky-saves@v0.6.8 (merged in #21).
     "bsky-saves==0.6.8",
 ]
 

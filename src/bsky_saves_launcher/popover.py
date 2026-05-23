@@ -30,6 +30,7 @@ import sys
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from bsky_saves_launcher.status import StatusSnapshot
     from bsky_saves_launcher.supervisor import Supervisor
 
 
@@ -156,91 +157,402 @@ def _make_link_button(title: str, on_click, targets_out: list):
     return btn
 
 
-def _build_default_view(
-    ak, on_open_local_gui, on_open_saves_site, on_show_more, targets_out: list
-):
-    """Build the Default panel.
+def _build_default_view(ak, on_open_local_gui, on_show_more, targets_out: list):
+    """Build the Default panel — now hosts everything except settings.
 
     Layout (top to bottom):
         Status (●  Running)
-        [breathing room]
-        Open BSky Saves (centered label)
-        [Local GUI]   [saves.lightseed.net]
-        [<flex>]                   More → (link, right)
+        [Local GUI] button
+        Library content (or placeholder when no snapshot):
+            @handle (bold)
+            "last seen N min ago" (hidden if fresh)
+            "1,247 saves"
+            "15 lost · 2 unsaved" (hidden if all zero)
+            Threads  ███░░░ 412 / 1247  (or hidden)
+            Images   ████░░ 856 / 1247  (or hidden)
+            Articles ███████░░ 973 / 1247  (or hidden)
+            "Fetch · 2 min ago · +3 / −0" [spinner] [errors badge]
+        Placeholder ("No active library status yet" + body) — mutually
+            exclusive with the library content block.
+        [<flex>]  More → (link, bottom-right)
 
-    Returns (root_view, status_label, _unused_, _unused_) — keeps the
-    signature shape so the construct() caller doesn't need a wider
-    rewrite. The copy-token control moved to the More panel.
+    Returns (root_view, status_label, library_handles). The library
+    handles dict carries every label, level indicator, spinner, button,
+    and container the caller needs to update at runtime via
+    `_render_library_section`.
     """
     from AppKit import (  # type: ignore[import-not-found]
+        NSBezelStyleRounded,
         NSButton,
+        NSControlSizeSmall,
         NSFont,
+        NSLevelIndicator,
+        NSLevelIndicatorStyleContinuousCapacity,
+        NSLineBreakByTruncatingTail,
+        NSProgressIndicator,
+        NSProgressIndicatorStyleSpinning,
         NSStackView,
         NSStackViewDistributionFill,
+        NSStackViewDistributionGravityAreas,
+        NSStackViewGravityTop,
         NSTextAlignmentCenter,
+        NSTextAlignmentRight,
         NSTextField,
         NSUserInterfaceLayoutOrientationHorizontal,
         NSUserInterfaceLayoutOrientationVertical,
         NSView,
     )
 
+    # Outer stack uses Fill distribution + an explicit flex-spacer view
+    # to deterministically anchor nav_row at the bottom and pack the
+    # content (status_label, local_gui_button, library_content/
+    # placeholder) at the top. GravityAreas was tried first but its
+    # leftover-space heuristic behaves differently on first-open vs.
+    # after a contentViewController-swap + size-tween round-trip
+    # (More→Back): on the second path library_content ends up inflated,
+    # pushing the hydration bars down toward the More link. Fill +
+    # high content-hugging on every "real" child + low hugging on a
+    # transparent spacer between content and nav_row removes that
+    # gravity-zone ambiguity — the spacer absorbs all leftover height,
+    # so nav_row stays pinned to the bottom and library_content stays
+    # tight to its intrinsic content height regardless of which path
+    # produced the layout pass.
+    NSLayoutConstraintOrientationVertical = 1
+    NSLayoutPriorityRequired = 1000.0
+    NSLayoutPriorityDefaultLow = 250.0
+
     stack = NSStackView.alloc().init()
     stack.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
     stack.setDistribution_(NSStackViewDistributionFill)
-    stack.setSpacing_(8.0)
-    stack.setEdgeInsets_((6, 12, 2, 12))  # tight bottom inset
+    stack.setSpacing_(6.0)
+    # Bottom inset gives the "More →" link breathing room from the
+    # popover's bottom edge (symmetric with the 12pt setCustomSpacing
+    # above the link, near the placeholder/content block).
+    stack.setEdgeInsets_((6, 12, 12, 12))
+
+    def _hug_vertical(view, priority=NSLayoutPriorityRequired):
+        # Make a Fill-distributed arranged subview refuse vertical
+        # stretching, so leftover height is forced into the explicit
+        # flex spacer rather than redistributed across content.
+        try:
+            view.setHuggingPriority_forOrientation_(
+                priority, NSLayoutConstraintOrientationVertical
+            )
+        except Exception:
+            try:
+                view.setContentHuggingPriority_forOrientation_(
+                    priority, NSLayoutConstraintOrientationVertical
+                )
+            except Exception:
+                pass
 
     status_label = NSTextField.labelWithString_("●  Loading…")
     status_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    _hug_vertical(status_label)
     stack.addArrangedSubview_(status_label)
 
-    # "BSky Saves" header, all bold, centered.
-    open_header = NSTextField.labelWithString_("BSky Saves")
-    open_header.setAlignment_(NSTextAlignmentCenter)
-    bold_font = NSFont.boldSystemFontOfSize_(NSFont.systemFontSize())
-    open_header.setFont_(bold_font)
-    stack.addArrangedSubview_(open_header)
-
-    # Local GUI and saves.lightseed.net — each on its own line.
     local_gui_button = NSButton.buttonWithTitle_target_action_("Local GUI", None, None)
     local_gui_button.setBezelStyle_(1)
     local_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_local_gui)
     targets_out.append(local_target)
     local_gui_button.setTarget_(local_target)
     local_gui_button.setAction_("invoke:")
+    _hug_vertical(local_gui_button)
     stack.addArrangedSubview_(local_gui_button)
 
-    saves_site_button = NSButton.buttonWithTitle_target_action_(
-        "saves.lightseed.net", None, None
-    )
-    saves_site_button.setBezelStyle_(1)
-    saves_target = _PyCallbackTarget.alloc().initWithCallable_(on_open_saves_site)
-    targets_out.append(saves_target)
-    saves_site_button.setTarget_(saves_target)
-    saves_site_button.setAction_("invoke:")
-    stack.addArrangedSubview_(saves_site_button)
+    # ── Library content block (visible when snapshot has a handle) ──
+    # GravityAreas (not Fill) so arranged subviews keep their intrinsic
+    # heights and stack naturally from the top. Without this, Fill
+    # distributes leftover panel height across the children — pushing
+    # the hydration bars to the bottom of the panel and leaving a gap
+    # above. The hydration rows belong directly below the last-activity
+    # line; any leftover space sits at the bottom of the stack.
+    # GravityAreas distribution + every child added via addView_inGravity_
+    # to the Top zone. addArrangedSubview_ on a GravityAreas stack lands
+    # children in the center gravity zone, which centers them vertically
+    # within whatever height the container is allocated. That looks fine
+    # on first show (library_content sizes tight to its content) but
+    # after a More→Back round-trip the outer stack's layout pass gives
+    # library_content more vertical space, and the center-gravity
+    # children re-center — moving the activity line and hydration rows
+    # downward. addView_inGravity_(_, Top) pins every child flush to the
+    # top of library_content so layout stays identical across navigation.
+    library_content = NSStackView.alloc().init()
+    library_content.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    library_content.setDistribution_(NSStackViewDistributionGravityAreas)
+    library_content.setSpacing_(4.0)
+    # High vertical hugging on library_content itself: combined with the
+    # outer stack's Fill distribution and the explicit flex spacer just
+    # below, this guarantees the outer stack never inflates
+    # library_content past its intrinsic height. The spacer (low
+    # hugging) is the only arranged subview willing to take leftover
+    # space, so all extra panel height lands between library_content
+    # and nav_row regardless of which layout path ran.
+    _hug_vertical(library_content)
 
-    # More space between status and the header; tight space between
-    # the bottom button and the More link.
+    handle_label = NSTextField.labelWithString_("")
+    handle_label.setFont_(NSFont.boldSystemFontOfSize_(NSFont.systemFontSize()))
+    library_content.addView_inGravity_(handle_label, NSStackViewGravityTop)
+
+    staleness_label = NSTextField.labelWithString_("")
+    staleness_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    library_content.addView_inGravity_(staleness_label, NSStackViewGravityTop)
+
+    # Combined "1,247 saves (15 lost · 2 unsaved)" line. Renderer
+    # builds an attributed string with the regular size for the count
+    # and the small system font for the parenthetical retention info.
+    total_label = NSTextField.labelWithString_("")
+    total_label.setFont_(NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1))
+    library_content.addView_inGravity_(total_label, NSStackViewGravityTop)
+
+    # Last-activity row sits ABOVE the hydration bars so the current
+    # state (Hydrating… / Refreshing… / "Fetch · N min ago") is the
+    # first thing the user reads after the totals. Centered as a unit
+    # via equal-width flex spacers on both sides — the [label]
+    # [spinner] [errors badge] group sits in the middle of the panel
+    # regardless of which sub-elements are currently visible.
+    la_row = NSStackView.alloc().init()
+    la_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    la_row.setDistribution_(NSStackViewDistributionFill)
+    la_row.setSpacing_(0)
+    la_left_spacer = NSView.alloc().init()
+    la_right_spacer = NSView.alloc().init()
+    la_row.addArrangedSubview_(la_left_spacer)
+    la_inner = NSStackView.alloc().init()
+    la_inner.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    la_inner.setSpacing_(6.0)
+    last_activity_label = NSTextField.labelWithString_("")
+    last_activity_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+    last_activity_label.setLineBreakMode_(NSLineBreakByTruncatingTail)
+    # Bound the label width so a long error message can't expand la_inner
+    # past the panel's content width and break the equal-spacer centering.
     try:
-        stack.setCustomSpacing_afterView_(20.0, status_label)
-        stack.setCustomSpacing_afterView_(4.0, saves_site_button)
+        last_activity_label.widthAnchor().constraintLessThanOrEqualToAnchor_constant_(
+            library_content.widthAnchor(), -16.0
+        ).setActive_(True)
+    except Exception:
+        pass
+    la_inner.addArrangedSubview_(last_activity_label)
+    spinner = NSProgressIndicator.alloc().init()
+    try:
+        spinner.setStyle_(NSProgressIndicatorStyleSpinning)
+    except Exception:
+        pass
+    try:
+        spinner.setControlSize_(NSControlSizeSmall)
+    except Exception:
+        pass
+    spinner.setIndeterminate_(True)
+    spinner.setDisplayedWhenStopped_(False)
+    la_inner.addArrangedSubview_(spinner)
+    errors_badge_button = NSButton.buttonWithTitle_target_action_("", None, None)
+    errors_badge_button.setBezelStyle_(NSBezelStyleRounded)
+    errors_badge_button.setHidden_(True)
+    la_inner.addArrangedSubview_(errors_badge_button)
+    la_row.addArrangedSubview_(la_inner)
+    la_row.addArrangedSubview_(la_right_spacer)
+    la_left_spacer.widthAnchor().constraintEqualToAnchor_(
+        la_right_spacer.widthAnchor()
+    ).setActive_(True)
+    library_content.addView_inGravity_(la_row, NSStackViewGravityTop)
+    # la_row must span library_content's full width for the equal-width
+    # flex spacers to actually center la_inner on the panel. Without
+    # this, la_row sizes to la_inner's intrinsic width and the spacers
+    # collapse to zero — la_row then drifts left or right depending on
+    # NSStackView's centerX alignment behavior. Pinning leading/trailing
+    # to the parent stack forces la_row to fill the available width.
+    la_row.leadingAnchor().constraintEqualToAnchor_(
+        library_content.leadingAnchor()
+    ).setActive_(True)
+    la_row.trailingAnchor().constraintEqualToAnchor_(
+        library_content.trailingAnchor()
+    ).setActive_(True)
+
+    # Three hydration rows in the contract-locked order
+    # (threads, images, articles per the user's UI preference).
+    # Each row is its own horizontal NSStackView with fixed-width label
+    # and ratio columns so the bars line up vertically across rows
+    # regardless of label/ratio text. NSGridView was tried for this and
+    # appeared to align columns correctly, but exhibited a first-render
+    # bug where the bar's intrinsic height resolved unevenly and made
+    # the Threads→Images gap render larger than Images→Articles until a
+    # re-layout (e.g. More→Back) fired. Per-row stacks with explicit
+    # column widths sidestep the grid's row-height calculation entirely.
+    # Column widths (sum 276pt = 300 panel - 24pt horizontal insets):
+    #   label  56pt right-aligned ("Articles" fits at small system font)
+    #   spacing 8pt (stack default)
+    #   bar   124pt (matches the la_inner visual span)
+    #   spacing 8pt
+    #   ratio  72pt right-aligned (fits "1,234 / 1,234")
+    _HYDRATION_LABEL_W = 56.0
+    _HYDRATION_BAR_W = 124.0
+    _HYDRATION_RATIO_W = 72.0
+    # list of (label_NSTextField, bar_NSLevelIndicator, ratio_NSTextField, row_NSStackView)
+    hydration_rows = []
+    for label_text in ("Threads", "Images", "Articles"):
+        row = NSStackView.alloc().init()
+        row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+        row.setSpacing_(8.0)
+        lab = NSTextField.labelWithString_(label_text)
+        lab.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        lab.setAlignment_(NSTextAlignmentRight)
+        try:
+            lab.widthAnchor().constraintEqualToConstant_(_HYDRATION_LABEL_W).setActive_(True)
+        except Exception:
+            pass
+        bar = NSLevelIndicator.alloc().init()
+        try:
+            bar.setLevelIndicatorStyle_(NSLevelIndicatorStyleContinuousCapacity)
+        except Exception:
+            pass
+        try:
+            bar.widthAnchor().constraintEqualToConstant_(_HYDRATION_BAR_W).setActive_(True)
+        except Exception:
+            pass
+        ratio = NSTextField.labelWithString_("")
+        ratio.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
+        ratio.setAlignment_(NSTextAlignmentRight)
+        try:
+            ratio.widthAnchor().constraintEqualToConstant_(_HYDRATION_RATIO_W).setActive_(True)
+        except Exception:
+            pass
+        row.addArrangedSubview_(lab)
+        row.addArrangedSubview_(bar)
+        row.addArrangedSubview_(ratio)
+        library_content.addView_inGravity_(row, NSStackViewGravityTop)
+        hydration_rows.append((lab, bar, ratio, row))
+
+    # Inter-group spacing within the library content block:
+    # - 16pt between the saves counters (group 3) and the last
+    #   activity line (group 4)
+    # - 16pt between the last activity line (group 4) and the
+    #   hydration progress bars (group 5)
+    # Within-group spacing stays at the stack's 4pt default for the
+    # handle/staleness/total cluster.
+    try:
+        library_content.setCustomSpacing_afterView_(16.0, total_label)
+        library_content.setCustomSpacing_afterView_(16.0, la_row)
     except Exception:
         pass
 
-    # Bottom-right More link.
-    more_row = NSStackView.alloc().init()
-    more_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    more_row.setSpacing_(0)
-    spacer = NSView.alloc().init()
-    more_row.addArrangedSubview_(spacer)
+    _hug_vertical(library_content)
+    stack.addArrangedSubview_(library_content)
+
+    # ── Placeholder (visible when snapshot is None or has no handle).
+    # No CTA button — the Local GUI button above is the right action.
+    # The stack centres its (single) headline label by wrapping the
+    # label in a horizontal row with equal-width flex spacers — the
+    # NSStackView vertical-alignment default is leading-anchored on
+    # some macOS versions, which caused the headline to render off-
+    # centre even with NSTextAlignmentCenter on the label itself.
+    placeholder = NSStackView.alloc().init()
+    placeholder.setOrientation_(NSUserInterfaceLayoutOrientationVertical)
+    placeholder.setDistribution_(NSStackViewDistributionFill)
+    placeholder.setSpacing_(4.0)
+    placeholder.setEdgeInsets_((8, 0, 8, 0))
+
+    placeholder_headline = NSTextField.labelWithString_("No active library status yet.")
+    placeholder_headline.setFont_(NSFont.boldSystemFontOfSize_(NSFont.smallSystemFontSize()))
+    placeholder_headline.setAlignment_(NSTextAlignmentCenter)
+    headline_row = NSStackView.alloc().init()
+    headline_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    headline_row.setDistribution_(NSStackViewDistributionFill)
+    headline_row.setSpacing_(0)
+    ph_left = NSView.alloc().init()
+    ph_right = NSView.alloc().init()
+    headline_row.addArrangedSubview_(ph_left)
+    headline_row.addArrangedSubview_(placeholder_headline)
+    headline_row.addArrangedSubview_(ph_right)
+    ph_left.widthAnchor().constraintEqualToAnchor_(
+        ph_right.widthAnchor()
+    ).setActive_(True)
+    placeholder.addArrangedSubview_(headline_row)
+    placeholder.setHidden_(True)
+    _hug_vertical(placeholder)
+    stack.addArrangedSubview_(placeholder)
+
+    # Explicit flex spacer: a transparent NSView with low vertical
+    # hugging that absorbs all leftover panel height. This is what
+    # keeps the content (status_label, local_gui_button,
+    # library_content/placeholder) packed at the top of the panel and
+    # nav_row pinned to the bottom — without depending on NSStackView's
+    # gravity-zone leftover-space distribution, which behaves
+    # inconsistently across the contentViewController-swap + size-tween
+    # path (More→Back). With Fill distribution + every "real" child at
+    # high vertical hugging + this spacer at low vertical hugging, all
+    # extra height has exactly one place to go.
+    flex_spacer = NSView.alloc().init()
+    try:
+        flex_spacer.setContentHuggingPriority_forOrientation_(
+            NSLayoutPriorityDefaultLow, NSLayoutConstraintOrientationVertical
+        )
+    except Exception:
+        pass
+    # Zero spacing around the spacer — the existing setCustomSpacing
+    # calls (12pt over status_label, 16pt under local_gui_button, 12pt
+    # under placeholder) own the visible gap geometry. The spacer
+    # itself just consumes flex height.
+    stack.addArrangedSubview_(flex_spacer)
+    try:
+        stack.setCustomSpacing_afterView_(0.0, flex_spacer)
+    except Exception:
+        pass
+
+    # Breathing room around key blocks:
+    # - 12pt over the status row (above the Local GUI button).
+    # - 16pt below the Local GUI button (separates it from the
+    #   library content / placeholder).
+    # - 12pt above the library content/placeholder block before the
+    #   bottom-right "More →" link (above the link).
+    # - The link's own bottom is governed by the outer stack inset.
+    try:
+        stack.setCustomSpacing_afterView_(12.0, status_label)
+        stack.setCustomSpacing_afterView_(16.0, local_gui_button)
+        # The view immediately before the nav row is the placeholder
+        # stack (always added last among the content blocks; visible
+        # state doesn't affect the spacing-anchor view identity).
+        stack.setCustomSpacing_afterView_(12.0, placeholder)
+    except Exception:
+        pass
+
+    # Bottom-right "More →" link. Pinned to the bottom of the panel by
+    # the explicit flex_spacer above (which absorbs all leftover
+    # vertical space); high vertical hugging keeps nav_row at its
+    # intrinsic single-row height so Fill distribution doesn't stretch
+    # it.
+    nav_row = NSStackView.alloc().init()
+    nav_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    nav_row.setDistribution_(NSStackViewDistributionFill)
+    nav_row.setSpacing_(0)
+    nav_row.addArrangedSubview_(NSView.alloc().init())  # horizontal flex spacer
     more_link = _make_link_button("More →", on_show_more, targets_out)
-    more_row.addArrangedSubview_(more_link)
-    stack.addArrangedSubview_(more_row)
+    nav_row.addArrangedSubview_(more_link)
+    _hug_vertical(nav_row)
+    stack.addArrangedSubview_(nav_row)
 
-    stack.setFrame_(((0, 0), (300, 180)))
+    # Start at the larger (populated) size; _render_library_section
+    # switches between two precomputed heights when content/placeholder
+    # visibility toggles. fittingSize-based dynamic sizing was tried but
+    # the VEV wrapper (frame-based) fights Auto Layout on the inner
+    # stack — keeping the inner stack frame-based is simpler.
+    stack.setFrame_(((0, 0), (300, 280)))
 
-    return stack, status_label, None, None
+    library_handles = {
+        "handle_label": handle_label,
+        "staleness_label": staleness_label,
+        "total_label": total_label,
+        "hydration_rows": hydration_rows,
+        "last_activity_label": last_activity_label,
+        "spinner": spinner,
+        "errors_badge_button": errors_badge_button,
+        "content": library_content,
+        "placeholder": placeholder,
+        # Exposed for the renderer to swap the placeholder text between
+        # the empty-state default ("No active library status yet.") and
+        # the in-flight First-Fetch case ("Fetching library…").
+        "placeholder_headline": placeholder_headline,
+    }
+    return stack, status_label, library_handles
 
 
 def _build_more_view(
@@ -249,6 +561,7 @@ def _build_more_view(
     initial_start_at_login: bool,
     on_start_at_login_toggle,
     on_copy_token,
+    on_open_saves_site,
     on_quit,
     on_back,
     targets_out: list,
@@ -257,10 +570,11 @@ def _build_more_view(
 
     Layout (top to bottom):
         ← Back (link, top-left)
-        Pairing Token:  [Copy]
+        Start at login         [switch]
         ─── horizontal separator ───
-        Start at login           [switch]
-        [spacer]
+        saves.lightseed.net (link, centered)
+        Pairing token          [Copy]
+        ─── horizontal separator ───
         Quit button
         Version footer (two lines, centered)
 
@@ -274,12 +588,6 @@ def _build_more_view(
         NSControlStateValueOff,
         NSControlStateValueOn,
         NSFont,
-        NSGridCellPlacementCenter,
-        NSGridCellPlacementLeading,
-        NSGridCellPlacementTrailing,
-        NSGridView,
-        NSLayoutAttributeTop,
-        NSLayoutConstraintOrientationVertical,
         NSStackView,
         NSStackViewDistributionFill,
         NSSwitch,
@@ -296,33 +604,23 @@ def _build_more_view(
     stack.setSpacing_(8.0)
     stack.setEdgeInsets_((6, 12, 12, 12))
 
-    # Back link, top-left (flex spacer on the right pushes it left).
+    # ── Back link, top-left ─────────────────────────────────────────
     back_row = NSStackView.alloc().init()
     back_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
     back_row.setSpacing_(0)
     back_link = _make_link_button("← Back", on_back, targets_out)
     back_row.addArrangedSubview_(back_link)
-    back_spacer = NSView.alloc().init()
-    back_row.addArrangedSubview_(back_spacer)
+    back_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
     stack.addArrangedSubview_(back_row)
 
-    # Two-row, two-column table: labels in left column, controls in
-    # right column. NSGridView gives us proper column alignment.
-    pairing_label = NSTextField.labelWithString_("Pairing token")
-    copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
-    copy_button_default_title = "Copy"
-    copy_button.setBezelStyle_(1)
-    # Pin the Copy button to a width that accommodates its widest
-    # transient title ("No token yet"). Without this, NSGridView's
-    # right column resizes on each flash, shifting the whole grid.
-    copy_button.setTranslatesAutoresizingMaskIntoConstraints_(False)
-    copy_button.widthAnchor().constraintEqualToConstant_(110.0).setActive_(True)
-    copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
-    targets_out.append(copy_target)
-    copy_button.setTarget_(copy_target)
-    copy_button.setAction_("invoke:")
-
+    # ── Start at login row ──────────────────────────────────────────
+    # Label on the left, switch on the right, via flex spacer between.
+    sal_row = NSStackView.alloc().init()
+    sal_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    sal_row.setSpacing_(8.0)
     sal_label = NSTextField.labelWithString_("Start at login")
+    sal_row.addArrangedSubview_(sal_label)
+    sal_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
     start_at_login_switch = NSSwitch.alloc().init()
     start_at_login_switch.setState_(
         NSControlStateValueOn if initial_start_at_login else NSControlStateValueOff
@@ -335,76 +633,83 @@ def _build_more_view(
     targets_out.append(start_at_login_target)
     start_at_login_switch.setTarget_(start_at_login_target)
     start_at_login_switch.setAction_("invoke:")
+    sal_row.addArrangedSubview_(start_at_login_switch)
+    stack.addArrangedSubview_(sal_row)
 
-    grid = NSGridView.gridViewWithViews_(
-        [
-            [pairing_label, copy_button],
-            [sal_label, start_at_login_switch],
-        ]
-    )
-    grid.setRowSpacing_(8.0)
-    grid.setColumnSpacing_(12.0)
-    grid.columnAtIndex_(0).setXPlacement_(NSGridCellPlacementTrailing)
-    grid.columnAtIndex_(1).setXPlacement_(NSGridCellPlacementLeading)
-    # Vertically centre the cells in each row so the labels line up
-    # with the centres of their controls (default is top-aligned).
-    grid.rowAtIndex_(0).setYPlacement_(NSGridCellPlacementCenter)
-    grid.rowAtIndex_(1).setYPlacement_(NSGridCellPlacementCenter)
-
-    # Centre the grid in the panel via a horizontal stack with
-    # equal-width flex spacers on both sides. Previous attempts
-    # (addView:inGravity:Center; wrapper with topAnchor+bottomAnchor)
-    # either snapped the grid to one edge or stretched its row heights
-    # on the second visit when the panel was re-parented. Equal-width
-    # spacers consistently centre the grid across all re-layouts.
-    table_row = NSStackView.alloc().init()
-    table_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
-    table_row.setDistribution_(NSStackViewDistributionFill)
-    table_row.setSpacing_(0)
-    # Anchor grid to the top of whatever vertical space the outer stack
-    # allocates to this row. Without this, on the second More-panel
-    # visit the row got allocated extra height and the grid floated
-    # down to the bottom, almost touching the separator.
-    table_row.setAlignment_(NSLayoutAttributeTop)
-    left_spacer = NSView.alloc().init()
-    right_spacer = NSView.alloc().init()
-    table_row.addArrangedSubview_(left_spacer)
-    table_row.addArrangedSubview_(grid)
-    table_row.addArrangedSubview_(right_spacer)
-    left_spacer.widthAnchor().constraintEqualToAnchor_(
-        right_spacer.widthAnchor()
-    ).setActive_(True)
-    # Tell the outer stack not to stretch this row vertically, plus
-    # pin the row's height to the grid's height directly. Two layers
-    # of defence against the occasional re-layout drift.
-    table_row.setContentHuggingPriority_forOrientation_(
-        1000, NSLayoutConstraintOrientationVertical
-    )
-    table_row.heightAnchor().constraintEqualToAnchor_(
-        grid.heightAnchor()
-    ).setActive_(True)
-    stack.addArrangedSubview_(table_row)
-
-    # Tighten the gap below "← Back" and give the grid more breathing
-    # room above the separator. Moves the grid up in the panel.
     try:
         stack.setCustomSpacing_afterView_(6.0, back_row)
-        stack.setCustomSpacing_afterView_(14.0, table_row)
+        stack.setCustomSpacing_afterView_(10.0, sal_row)
     except Exception:
         pass
 
-    # Horizontal separator after the table.
-    separator = NSBox.alloc().init()
-    separator.setBoxType_(NSBoxSeparator)
-    separator.setFrame_(((0, 0), (236, 1)))
-    stack.addArrangedSubview_(separator)
+    # ── Separator 1 (above the saves.lightseed.net link) ────────────
+    separator1 = NSBox.alloc().init()
+    separator1.setBoxType_(NSBoxSeparator)
+    separator1.setFrame_(((0, 0), (236, 1)))
+    stack.addArrangedSubview_(separator1)
 
-    # Breathing room between the separator and Quit.
+    # ── saves.lightseed.net link, centered ──────────────────────────
+    saves_row = NSStackView.alloc().init()
+    saves_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    saves_row.setDistribution_(NSStackViewDistributionFill)
+    saves_row.setSpacing_(0)
+    saves_left = NSView.alloc().init()
+    saves_right = NSView.alloc().init()
+    saves_row.addArrangedSubview_(saves_left)
+    saves_link = _make_link_button(
+        "saves.lightseed.net", on_open_saves_site, targets_out
+    )
+    saves_row.addArrangedSubview_(saves_link)
+    saves_row.addArrangedSubview_(saves_right)
+    saves_left.widthAnchor().constraintEqualToAnchor_(
+        saves_right.widthAnchor()
+    ).setActive_(True)
+    stack.addArrangedSubview_(saves_row)
+
     try:
-        stack.setCustomSpacing_afterView_(20.0, separator)
+        stack.setCustomSpacing_afterView_(10.0, separator1)
+        stack.setCustomSpacing_afterView_(10.0, saves_row)
     except Exception:
         pass
 
+    # ── Pairing token row ───────────────────────────────────────────
+    pairing_row = NSStackView.alloc().init()
+    pairing_row.setOrientation_(NSUserInterfaceLayoutOrientationHorizontal)
+    pairing_row.setSpacing_(8.0)
+    pairing_label = NSTextField.labelWithString_("Pairing token")
+    pairing_row.addArrangedSubview_(pairing_label)
+    pairing_row.addArrangedSubview_(NSView.alloc().init())  # flex spacer
+    copy_button = NSButton.buttonWithTitle_target_action_("Copy", None, None)
+    copy_button_default_title = "Copy"
+    copy_button.setBezelStyle_(1)
+    # Pin the Copy button width so the transient flash titles
+    # ("Copied ✓", "No token yet", "Copy failed") don't shift the row.
+    copy_button.setTranslatesAutoresizingMaskIntoConstraints_(False)
+    copy_button.widthAnchor().constraintEqualToConstant_(110.0).setActive_(True)
+    copy_target = _PyCallbackTarget.alloc().initWithCallable_(on_copy_token)
+    targets_out.append(copy_target)
+    copy_button.setTarget_(copy_target)
+    copy_button.setAction_("invoke:")
+    pairing_row.addArrangedSubview_(copy_button)
+    stack.addArrangedSubview_(pairing_row)
+
+    try:
+        stack.setCustomSpacing_afterView_(14.0, pairing_row)
+    except Exception:
+        pass
+
+    # ── Separator 2 (above Quit) ────────────────────────────────────
+    separator2 = NSBox.alloc().init()
+    separator2.setBoxType_(NSBoxSeparator)
+    separator2.setFrame_(((0, 0), (236, 1)))
+    stack.addArrangedSubview_(separator2)
+
+    try:
+        stack.setCustomSpacing_afterView_(14.0, separator2)
+    except Exception:
+        pass
+
+    # ── Quit ────────────────────────────────────────────────────────
     quit_button = NSButton.buttonWithTitle_target_action_("Quit", None, None)
     quit_button.setBezelStyle_(1)
     quit_target = _PyCallbackTarget.alloc().initWithCallable_(on_quit)
@@ -414,10 +719,11 @@ def _build_more_view(
     stack.addArrangedSubview_(quit_button)
 
     try:
-        stack.setCustomSpacing_afterView_(20.0, quit_button)
+        stack.setCustomSpacing_afterView_(16.0, quit_button)
     except Exception:
         pass
 
+    # ── Version footer ──────────────────────────────────────────────
     version_label = NSTextField.labelWithString_("…")
     version_label.setFont_(NSFont.systemFontOfSize_(NSFont.smallSystemFontSize()))
     version_label.setUsesSingleLineMode_(False)
@@ -425,7 +731,7 @@ def _build_more_view(
     version_label.setAlignment_(NSTextAlignmentCenter)
     stack.addArrangedSubview_(version_label)
 
-    stack.setFrame_(((0, 0), (260, 230)))
+    stack.setFrame_(((0, 0), (260, 260)))
 
     return stack, start_at_login_switch, version_label, copy_button, copy_button_default_title
 
@@ -461,15 +767,20 @@ def _wrap_in_active_visual_effect(inner):
     vev.setBlendingMode_(NSVisualEffectBlendingModeBehindWindow)
     vev.setState_(NSVisualEffectStateActive)
     inner.setFrame_(((0, 0), size))
-    # Anchor the inner stack to the top of the VEV. If the popover ever
-    # renders us inside a window taller than our intrinsic size (e.g. a
-    # resize-on-back didn't fully take effect), this keeps the content
-    # pinned to the top rather than the bottom (Cocoa origin is
-    # bottom-left, so without MinYMargin extra height shows as a gap
-    # above the stack).
+    # Make the inner stack track the VEV's size exactly on every resize.
+    # Width AND height sizable — the previous WidthSizable|MinYMargin
+    # combo kept the inner at a fixed height and let the bottom margin
+    # flex, which on macOS Tahoe ended up offsetting the inner within
+    # the VEV after a More→Back resize round-trip: the content drifted
+    # downward inside the VEV, making the activity line look like it
+    # had moved relative to the totals / More link above and below.
+    # HeightSizable removes the offset by making the inner always fill
+    # the VEV; the outer NSStackView (GravityAreas) then keeps its
+    # children pinned to top/bottom gravity zones with leftover space
+    # cleanly between them.
     NSViewWidthSizable = 2
-    NSViewMinYMargin = 8
-    inner.setAutoresizingMask_(NSViewWidthSizable | NSViewMinYMargin)
+    NSViewHeightSizable = 16
+    inner.setAutoresizingMask_(NSViewWidthSizable | NSViewHeightSizable)
     vev.addSubview_(inner)
     return vev
 
@@ -598,6 +909,11 @@ class StatusPopover:
         self._version_label = None
         self._tray_button = None
         self._popover_delegate = None
+        # Library section lives inside the Default panel (v0.4.x). The
+        # handles dict references the labels/bars/spinner/button that
+        # _render_library_section updates from the cached snapshot.
+        self._library_handles = None
+        self._last_status_snapshot: StatusSnapshot | None = None
 
     def notify_helper_started(self) -> None:
         """Called by app.main() when supervisor.start() runs."""
@@ -722,6 +1038,10 @@ class StatusPopover:
             except Exception as exc:
                 print(f"[popover] frame-pin failed: {exc!r}", file=sys.stderr)
             self._start_refresh_timer(ak)
+            # Immediate-on-show /status fetch. The tray's existing 5s
+            # health tick takes over for subsequent refreshes while the
+            # popover stays open (see TrayApp._on_health_tick).
+            self._kick_status_fetch()
         except Exception as exc:
             import traceback
 
@@ -738,10 +1058,9 @@ class StatusPopover:
         # here so the action selectors stay live across button clicks.
         self._button_targets = []
 
-        default_root, status_label, _unused1, _unused2 = _build_default_view(
+        default_root, status_label, library_handles = _build_default_view(
             ak,
             on_open_local_gui=self._on_open_gui,
-            on_open_saves_site=self._on_open_saves_site,
             on_show_more=self._on_show_more,
             targets_out=self._button_targets,
         )
@@ -750,33 +1069,27 @@ class StatusPopover:
             initial_start_at_login=prefs.start_at_login,
             on_start_at_login_toggle=self._on_start_at_login_toggle,
             on_copy_token=self._on_copy_token,
+            on_open_saves_site=self._on_open_saves_site,
             on_quit=self._on_quit,
             on_back=self._on_back_to_default,
             targets_out=self._button_targets,
         )
 
         # Wrap each root in an NSVisualEffectView locked to "active" state.
-        # NSPopover otherwise renders its material with the host window's
-        # key state, which causes a visible appearance shift the moment a
-        # control inside the popover takes focus (e.g. when the user clicks
-        # a button). state=Active pins the appearance regardless of focus.
         default_root = _wrap_in_active_visual_effect(default_root)
         more_root = _wrap_in_active_visual_effect(more_root)
 
         self._default_view = default_root
         self._more_view = more_root
+        self._library_handles = library_handles
         self._status_label = status_label
         self._copy_button = copy_button
         self._copy_default_title = copy_default_title
         self._start_at_login_switch = start_switch
         self._version_label = version_label
 
-        # Two separate NSViewControllers — one per panel. Each carries its
-        # own preferredContentSize so NSPopover sizes itself correctly on
-        # every swap. The previous single-controller-with-setView_ approach
-        # left the popover stuck at whichever size the previous view had
-        # because setContentSize_ on an already-shown popover doesn't
-        # reliably shrink it on the macOS versions we target.
+        # Two NSViewControllers, one per panel. Each carries its own
+        # preferredContentSize so NSPopover sizes correctly on every swap.
         default_controller = ak["NSViewController"].alloc().init()
         default_controller.setView_(default_root)
         default_size = _view_size(default_root)
@@ -790,6 +1103,11 @@ class StatusPopover:
         self._default_controller = default_controller
         self._more_controller = more_controller
         self._content_controller = default_controller
+
+        # Render the library section once now so the initial popover open
+        # shows either the placeholder or any pre-fetched snapshot
+        # (rather than a blank gap where the library data would be).
+        self._render_library_section()
 
         popover = ak["NSPopover"].alloc().init()
         popover.setBehavior_(ak["NSPopoverBehaviorTransient"])
@@ -897,6 +1215,387 @@ class StatusPopover:
         self._animated_swap_controller(self._default_controller)
         self._content_controller = self._default_controller
 
+    def update_library(self, snapshot) -> None:
+        """Cache the latest snapshot and re-render the library section
+        embedded in the Default panel.
+
+        Callable from the main thread only (the tray's 5s tick and
+        popover's own fetch both marshal via NSOperationQueue before
+        calling). Idempotent and safe to call before _construct has run
+        — `_library_handles` is None-guarded.
+        """
+        self._last_status_snapshot = snapshot
+        self._render_library_section()
+
+    def _render_library_section(self) -> None:
+        """Populate the library section inside the Default panel.
+
+        Shows the placeholder when there's no snapshot or no identified
+        library; otherwise hides the placeholder and renders each row,
+        independently hiding any sub-row whose payload field is absent.
+        Handle is rendered with a leading "@" prefix.
+
+        Visibility toggles between placeholder and content are wrapped
+        in an NSAnimationContext that explicitly disables implicit
+        animations. Without this, the placeholder→content swap that
+        happens when the first snapshot arrives (a few frames after
+        the popover opens) is implicitly tweened by Core Animation
+        — NSVisualEffectView is layer-backed and propagates layer
+        backing to its descendants, so frame changes inside the VEV
+        pick up Core Animation's default ~0.25s implicit duration.
+        The visible symptom: on first open, library_content briefly
+        renders tight under the Local GUI button and then visibly
+        slides down to its steady position as the layout settles.
+        Wrapping the toggle in a zero-duration animation context with
+        allowsImplicitAnimation=False makes the transition snap.
+        """
+        h = self._library_handles
+        if h is None:
+            return
+        snap = self._last_status_snapshot
+
+        try:
+            from AppKit import (  # type: ignore[import-not-found]
+                NSAnimationContext,
+            )
+
+            NSAnimationContext.beginGrouping()
+            NSAnimationContext.currentContext().setDuration_(0.0)
+            try:
+                NSAnimationContext.currentContext().setAllowsImplicitAnimation_(False)
+            except Exception:
+                pass
+            _anim_grouped = True
+        except Exception:
+            _anim_grouped = False
+
+        try:
+            self._render_library_section_inner(h, snap)
+        finally:
+            if _anim_grouped:
+                try:
+                    from AppKit import (  # type: ignore[import-not-found]
+                        NSAnimationContext,
+                    )
+
+                    NSAnimationContext.endGrouping()
+                except Exception:
+                    pass
+
+    def _render_library_section_inner(self, h, snap) -> None:
+        """Body of _render_library_section. See that method for context.
+
+        Split out so the caller can wrap the entire body — including
+        the trailing _resize_default_to_content — in a single
+        NSAnimationContext group.
+        """
+        if snap is None or snap.library is None or snap.library.handle is None:
+            # Pick a placeholder headline that fits what's actually
+            # happening. If the GUI says it's mid-refresh but hasn't
+            # pushed a handle yet (the "First Fetch in progress" case
+            # flagged by the GUI team in tenorune/bsky-saves-gui#85),
+            # show that state instead of the generic empty-state line.
+            in_flight = snap is not None and snap.current_state in (
+                "refreshing",
+                "hydrating",
+            )
+            if in_flight:
+                h["placeholder_headline"].setStringValue_(
+                    "Fetching library…"
+                    if snap.current_state == "refreshing"
+                    else "Backing up library…"
+                )
+            else:
+                h["placeholder_headline"].setStringValue_(
+                    "No active library status yet."
+                )
+            h["content"].setHidden_(True)
+            h["placeholder"].setHidden_(False)
+            self._force_default_layout()
+            return
+
+        h["placeholder"].setHidden_(True)
+        h["content"].setHidden_(False)
+
+        from AppKit import NSColor  # type: ignore[import-not-found]
+
+        from bsky_saves_launcher import status as s
+
+        h["handle_label"].setStringValue_(f"@{snap.library.handle}")
+
+        # Staleness indicator is intentionally hidden: the last-activity
+        # line below (e.g. "Last: fetched 12 min ago") gives the user
+        # a better timeliness signal than a separate "last seen" tag.
+        # Leaving the widget in place but always-hidden so the layout
+        # contract stays stable; uncomment the setStringValue + show
+        # path to re-enable.
+        h["staleness_label"].setStringValue_("")
+        h["staleness_label"].setHidden_(True)
+
+        total = s.format_total_saves(snap)
+        retention = s.format_retention(snap)
+        if total is None:
+            h["total_label"].setStringValue_("")
+            h["total_label"].setHidden_(True)
+        else:
+            h["total_label"].setHidden_(False)
+            if retention is None:
+                h["total_label"].setStringValue_(total)
+            else:
+                # "1,247 saves (15 lost · 2 unsaved)" — the parenthetical
+                # uses the small system font so the count remains the
+                # visual emphasis on the row.
+                from AppKit import (  # type: ignore[import-not-found]
+                    NSFont,
+                    NSFontAttributeName,
+                )
+                from Foundation import (  # type: ignore[import-not-found]
+                    NSMakeRange,
+                    NSMutableAttributedString,
+                )
+
+                paren = f" ({retention})"
+                text = total + paren
+                attr = NSMutableAttributedString.alloc().initWithString_(text)
+                big = NSFont.systemFontOfSize_(NSFont.systemFontSize() + 1)
+                small = NSFont.systemFontOfSize_(NSFont.smallSystemFontSize())
+                attr.addAttribute_value_range_(
+                    NSFontAttributeName, big, NSMakeRange(0, len(total))
+                )
+                attr.addAttribute_value_range_(
+                    NSFontAttributeName, small, NSMakeRange(len(total), len(paren))
+                )
+                h["total_label"].setAttributedStringValue_(attr)
+
+        rows_data = s.format_hydration_rows(snap)
+        # strict=True asserts the invariant that the pre-built row list
+        # matches the contract-locked feature-name list (both length 3,
+        # order threads/images/articles).
+        for (_lab, bar, ratio, row), name in zip(
+            h["hydration_rows"], ["threads", "images", "articles"], strict=True
+        ):
+            match = next(
+                ((lbl, c, t) for lbl, c, t in rows_data if lbl.lower() == name),
+                None,
+            )
+            if match is None:
+                row.setHidden_(True)
+                continue
+            _, completed, total_v = match
+            row.setHidden_(False)
+            try:
+                bar.setMinValue_(0.0)
+                bar.setMaxValue_(float(total_v) if total_v > 0 else 1.0)
+                bar.setDoubleValue_(float(completed))
+            except Exception:
+                pass
+            ratio.setStringValue_(f"{completed:,} / {total_v:,}")
+
+        # In-flight detection: trust the GUI's current_state, which since
+        # bsky-saves-gui v0.6.5-rc.4 reliably reflects all three hydration
+        # stores throughout the hydration phase (R11). The "error" branch
+        # is panel-owned per R12 point 5: render the persisted refresh
+        # error inline with red text + tooltip, sticky by construction
+        # (we just render current_state — the helper persists "error" to
+        # disk, so a launcher restart re-surfaces the same message).
+        error = snap.current_state == "error"
+        refreshing = snap.current_state == "refreshing"
+        hydrating = snap.current_state == "hydrating"
+
+        # Default to empty; only the error branch overrides to the
+        # underlying refresh-error message (also used as the tooltip).
+        err_msg = ""
+        if error:
+            err_msg = (
+                snap.last_activity.errors[0].message
+                if snap.last_activity and snap.last_activity.errors
+                else ""
+            )
+            la_str = f"⚠ Refresh failed: {err_msg}" if err_msg else "⚠ Refresh failed"
+        elif refreshing:
+            la_str = "Refreshing…"
+        elif hydrating:
+            la_str = "Backing up…"
+        else:
+            la_str = s.format_last_activity(snap)
+        h["last_activity_label"].setStringValue_(la_str or "")
+        h["last_activity_label"].setHidden_(la_str is None)
+        try:
+            h["last_activity_label"].setTextColor_(
+                NSColor.systemRedColor() if error else NSColor.labelColor()
+            )
+            h["last_activity_label"].setToolTip_(err_msg)
+        except Exception:
+            pass
+
+        spinning = refreshing or hydrating
+        try:
+            h["spinner"].setHidden_(not spinning)
+            if spinning:
+                h["spinner"].startAnimation_(None)
+            else:
+                h["spinner"].stopAnimation_(None)
+        except Exception:
+            pass
+
+        # Errors badge: visible only when last_activity carries errors
+        # AND we're not already rendering the inline "Refresh failed"
+        # message (R12) — otherwise the badge double-ups on the same
+        # refresh_error entry.
+        errs = snap.last_activity.errors if snap.last_activity else []
+        if errs and not error:
+            n = sum(e.count for e in errs)
+            label = "error" if n == 1 else "errors"
+            try:
+                h["errors_badge_button"].setTitle_(f"{n} {label}")
+                h["errors_badge_button"].setHidden_(False)
+                tip = "\n".join(f"{e.kind}: {e.message} (×{e.count})" for e in errs)
+                h["errors_badge_button"].setToolTip_(tip)
+            except Exception:
+                pass
+        else:
+            try:
+                h["errors_badge_button"].setHidden_(True)
+            except Exception:
+                pass
+
+        # Resize the Default panel to fit whatever's currently visible.
+        # Placeholder mode is much shorter than populated mode; without
+        # this the popover would carry the populated panel's height
+        # even when only the one-line placeholder is showing.
+        self._resize_default_to_content()
+
+        # Synchronously settle all intrinsic content sizes so the next
+        # display tick uses final frames. Otherwise the visibility
+        # toggle above and the string-value updates lead to a deferred
+        # layout pass during which library_content briefly resolves at
+        # a smaller intrinsic height (text fields haven't measured
+        # their new strings yet), and the subsequent settle produces a
+        # visible frame change that Core Animation tweens.
+        self._force_default_layout()
+
+    # Two precomputed heights for the Default panel — placeholder vs
+    # populated. Switched between in _resize_default_to_content based on
+    # which sub-stack is currently visible. Width is 300pt regardless.
+    _DEFAULT_PLACEHOLDER_SIZE = (300.0, 160.0)
+    _DEFAULT_POPULATED_SIZE = (300.0, 280.0)
+
+    def _force_default_layout(self) -> None:
+        """Force a synchronous layout pass on the Default panel's view tree.
+
+        Called at the end of every _render_library_section pass so any
+        intrinsic content size changes (string value updates,
+        visibility toggles) resolve to final frames before the next
+        display tick. Without this, the first frame after a
+        placeholder→content swap can render with stale intrinsic sizes
+        — library_content collapses smaller than its eventual content
+        height — and the subsequent settle produces a visible
+        Core-Animation-tweened frame change. NSVisualEffectView's
+        layer-backing propagates into the descendant tree, so any
+        deferred frame change here picks up CA's implicit ~0.25s
+        animation.
+        """
+        view = self._default_view
+        if view is None:
+            return
+        try:
+            view.layoutSubtreeIfNeeded()
+        except Exception:
+            pass
+
+    def _resize_default_to_content(self) -> None:
+        """Switch the Default panel's preferredContentSize between the
+        populated and placeholder sizes based on which sub-stack is
+        currently visible. Tweens the popover's contentSize over 0.083s
+        so the height change is animated rather than snapping.
+
+        Uses two precomputed sizes rather than a fittingSize-based
+        dynamic measurement because the VEV wrapper that hosts the
+        inner stack is frame-based (Auto Layout on the inner conflicts
+        with the wrapper's setFrame_ path)."""
+        if self._default_controller is None or self._popover is None:
+            return
+        if self._library_handles is None:
+            return
+        placeholder_visible = bool(self._library_handles["placeholder"].isHidden() is False)
+        target_w, target_h = (
+            self._DEFAULT_PLACEHOLDER_SIZE
+            if placeholder_visible
+            else self._DEFAULT_POPULATED_SIZE
+        )
+        try:
+            old_size = self._default_controller.preferredContentSize()
+            try:
+                old_w = old_size.width
+                old_h = old_size.height
+            except AttributeError:
+                old_w, old_h = old_size[0], old_size[1]
+            if abs(target_h - old_h) < 1 and abs(target_w - old_w) < 1:
+                return
+            self._default_controller.setPreferredContentSize_((target_w, target_h))
+            if self._content_controller is self._default_controller:
+                popover_size = self._popover.contentSize()
+                try:
+                    pw = popover_size.width
+                    ph = popover_size.height
+                except AttributeError:
+                    pw, ph = popover_size[0], popover_size[1]
+                if abs(target_h - ph) > 1 or abs(target_w - pw) > 1:
+                    self._start_size_tween(
+                        self._default_controller,
+                        pw,
+                        ph,
+                        target_w,
+                        target_h,
+                        duration_s=0.083,
+                    )
+        except Exception as exc:
+            print(f"[popover] resize-to-content failed: {exc!r}", file=sys.stderr)
+
+    def _kick_status_fetch(self) -> None:
+        """Immediate-on-show status fetch. Runs the blocking httpx call
+        on a daemon worker thread and marshals the result back to the
+        main thread via NSOperationQueue so the AppKit update happens
+        on the main runloop."""
+        import threading
+
+        def worker():
+            from bsky_saves_launcher import status as s
+            from bsky_saves_launcher import token as t
+
+            try:
+                tok = t.read_pairing_token()
+            except Exception:
+                tok = None
+            if not tok:
+                snap = None
+            else:
+                try:
+                    snap = s.fetch_status(token=tok)
+                except Exception:
+                    snap = None
+            self._on_status_fetched(snap)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_status_fetched(self, snapshot) -> None:
+        """Marshal a fetched snapshot back to the main thread for UI
+        update. Called from background worker threads.
+
+        If the main-queue dispatch itself fails, the update is dropped
+        rather than fired from the worker thread — calling AppKit off
+        the main thread is worse than missing one tick (the next tray
+        health-poll cycle, ~5s later, will refresh the snapshot).
+        """
+        try:
+            from Foundation import NSOperationQueue  # type: ignore[import-not-found]
+
+            NSOperationQueue.mainQueue().addOperationWithBlock_(
+                lambda: self.update_library(snapshot)
+            )
+        except Exception as exc:
+            print(f"[popover] status update dispatch failed: {exc!r}", file=sys.stderr)
+
     def _animated_swap_controller(self, controller) -> None:
         """Swap the popover's contentViewController and animate the size
         change with a manual frame-stepped tween.
@@ -984,6 +1683,15 @@ class StatusPopover:
                 except Exception:
                     pass
                 self._size_tween_timer = None
+                # Layout stability across the Back→Default tween is now
+                # owned by the outer stack's structural setup
+                # (Fill distribution + explicit flex spacer +
+                # high vertical hugging on every "real" arranged
+                # subview). The flex spacer absorbs all leftover
+                # height, so library_content cannot be inflated by the
+                # tween's per-tick VEV resize regardless of how
+                # NSStackView resolves its distribution heuristics. No
+                # post-tween re-render needed.
 
         timer = NSTimer.timerWithTimeInterval_repeats_block_(interval, True, tick)
         NSRunLoop.mainRunLoop().addTimer_forMode_(timer, NSRunLoopCommonModes)

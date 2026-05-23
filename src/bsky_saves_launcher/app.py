@@ -233,7 +233,9 @@ def _run_probe() -> None:
 
 
 def main() -> int:
-    print("[launcher] BSky Saves launcher starting (v0.3.0 popover build)", file=sys.stderr)
+    from bsky_saves_launcher import __version__ as launcher_version
+
+    print(f"[launcher] BSky Saves launcher starting (v{launcher_version})", file=sys.stderr)
 
     if os.environ.get("BSKY_SAVES_PROBE"):
         _run_probe()
@@ -255,6 +257,11 @@ def main() -> int:
                 supervisor, tray.icon_handle(), tray=tray
             )
             popover_holder["popover"].notify_helper_started()
+            # Register the popover so the tray's existing 5s health
+            # tick co-fetches /status and pushes the snapshot to the
+            # Library panel (v0.4.0). Wired on first show so we only
+            # poll once the user has expressed interest in the panel.
+            tray.set_status_observer(popover_holder["popover"])
         # Toggle behavior — our NSEvent monitor consumes the click, so
         # the popover's transient-close-on-click-outside doesn't fire
         # when the user clicks the tray icon to dismiss the popover.
